@@ -119,21 +119,10 @@ export function prosemirrorToMarkdown(
 export function formatPanels(
 	panels: Record<string, GranolaPanel> | undefined,
 ): string {
-	if (!panels) {
-		console.debug("formatPanels: no panels");
-		return "";
-	}
-	console.debug("formatPanels: panels", JSON.stringify(panels, null, 2));
+	if (!panels) return "";
 	return Object.values(panels)
 		.map((panel) => {
-			const rawContent = prosemirrorToMarkdown(panel.content);
-			const content = rawContent.trim();
-			console.debug(`Panel "${panel.title}":`, {
-				rawContent: JSON.stringify(rawContent),
-				trimmed: JSON.stringify(content),
-				length: content.length,
-			});
-			// Skip panels with no content
+			const content = prosemirrorToMarkdown(panel.content).trim();
 			if (!content) return "";
 			return `## ${panel.title}\n\n${content}`;
 		})

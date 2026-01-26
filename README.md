@@ -109,6 +109,14 @@ tags:
 - **Desktop only**: This plugin uses Node.js file system access
 - **Granola installed**: The plugin reads from Granola's local cache file
 
+## External File Access
+
+This plugin reads files outside your Obsidian vault:
+- **Granola cache file** (`~/Library/Application Support/Granola/cache-v3.json` on macOS) - Contains your meeting data (notes, transcripts, attendees)
+- **Granola auth file** (`~/Library/Application Support/Granola/supabase.json` on macOS) - Used only to identify the current user ID to filter meetings
+
+This is necessary because Granola stores meeting data locally, and this plugin syncs that data into your vault. No data is sent externally—everything is read-only from local files.
+
 ## Development
 
 ```bash
