@@ -14,7 +14,17 @@ export interface GranolaDocument {
 	notes_markdown?: string;
 	notes?: ProseMirrorDoc;
 	people?: {
-		attendees?: Array<{ name?: string; email?: string }>;
+		attendees?: Array<{
+			name?: string;
+			email?: string;
+			details?: {
+				person?: {
+					name?: {
+						fullName?: string;
+					};
+				};
+			};
+		}>;
 	};
 }
 
@@ -169,7 +179,13 @@ export function formatTranscript(
 export function getAttendeeNames(doc: GranolaDocument): string[] {
 	return (
 		doc.people?.attendees
-			?.map((a) => a.name || a.email || "Unknown")
+			?.map(
+				(a) =>
+					a.name ||
+					a.details?.person?.name?.fullName ||
+					a.email ||
+					"Unknown",
+			)
 			.filter((name) => name !== "Unknown") || []
 	);
 }

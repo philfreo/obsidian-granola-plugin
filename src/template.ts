@@ -6,7 +6,6 @@ import {
 	prosemirrorToMarkdown,
 	formatPanels,
 	formatTranscript,
-	getAttendeeNames,
 	getMeetingTimes,
 } from "./granola";
 import DEFAULT_TEMPLATE from "./default-template.md";
@@ -32,15 +31,39 @@ export async function loadTemplate(app: App, templatePath: string): Promise<stri
 	return DEFAULT_TEMPLATE;
 }
 
+function resolveAttendeeName(
+	attendee: { name?: string; email?: string; details?: { person?: { name?: { fullName?: string } } } },
+	emailToNoteTitle: Map<string, string>,
+): string | null {
+	// First, try to match by email to an existing note
+	if (attendee.email) {
+		const noteTitle = emailToNoteTitle.get(attendee.email.toLowerCase());
+		if (noteTitle) return noteTitle;
+	}
+
+	// Fall back to Granola's data
+	return (
+		attendee.name ||
+		attendee.details?.person?.name?.fullName ||
+		attendee.email ||
+		null
+	);
+}
+
 export function applyTemplate(
 	template: string,
 	doc: GranolaDocument,
 	panels: Record<string, GranolaPanel> | undefined,
-	transcript: TranscriptEntry[] | undefined
+	transcript: TranscriptEntry[] | undefined,
+	emailToNoteTitle: Map<string, string> = new Map(),
 ): string {
 	const date = doc.created_at.split("T")[0];
-	const attendeeNames = getAttendeeNames(doc);
 	const times = getMeetingTimes(transcript);
+
+	// Resolve attendee names, preferring matches from vault notes
+	const attendeeNames = (doc.people?.attendees ?? [])
+		.map((a) => resolveAttendeeName(a, emailToNoteTitle))
+		.filter((name): name is string => name !== null && name !== "Unknown");
 
 	const notes = (doc.notes_markdown || prosemirrorToMarkdown(doc.notes)).trim();
 	const enhancedNotes = formatPanels(panels);

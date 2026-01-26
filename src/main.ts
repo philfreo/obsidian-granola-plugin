@@ -143,6 +143,26 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 
+		// Build map of email -> note title for attendee matching
+		const emailToNoteTitle = new Map<string, string>();
+		if (this.settings.matchAttendeesByEmail) {
+			for (const file of files) {
+				const fileCache = this.app.metadataCache.getFileCache(file);
+				// Frontmatter values have unknown type
+				// eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+				const emails = fileCache?.frontmatter?.emails;
+				if (Array.isArray(emails)) {
+					for (const email of emails) {
+						if (typeof email === "string") {
+							emailToNoteTitle.set(email.toLowerCase(), file.basename);
+						}
+					}
+				} else if (typeof emails === "string") {
+					emailToNoteTitle.set(emails.toLowerCase(), file.basename);
+				}
+			}
+		}
+
 		let created = 0;
 		let updated = 0;
 		let skipped = 0;
@@ -166,14 +186,14 @@ export default class GranolaSyncPlugin extends Plugin {
 					}
 
 					// Update existing file
-					const content = this.renderDocument(doc.id, cache, template);
+					const content = this.renderDocument(doc.id, cache, template, emailToNoteTitle);
 					await this.app.vault.modify(existingFile, content);
 					updated++;
 				} else {
 					// Create new file
 					const filename = generateFilename(filenamePattern, doc);
 					const filePath = normalizePath(`${folderPath}/${filename}.md`);
-					const content = this.renderDocument(doc.id, cache, template);
+					const content = this.renderDocument(doc.id, cache, template, emailToNoteTitle);
 					await this.app.vault.create(filePath, content);
 					created++;
 				}
@@ -190,10 +210,15 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 	}
 
-	private renderDocument(docId: string, cache: GranolaCache, template: string): string {
+	private renderDocument(
+		docId: string,
+		cache: GranolaCache,
+		template: string,
+		emailToNoteTitle: Map<string, string>,
+	): string {
 		const doc = cache.documents[docId];
 		const panels = cache.documentPanels[docId];
 		const transcript = cache.transcripts[docId];
-		return applyTemplate(template, doc, panels, transcript);
+		return applyTemplate(template, doc, panels, transcript, emailToNoteTitle);
 	}
 }

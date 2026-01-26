@@ -7,6 +7,7 @@ export interface GranolaSyncSettings {
 	templatePath: string;
 	autoSyncOnStartup: boolean;
 	skipExistingNotes: boolean;
+	matchAttendeesByEmail: boolean;
 }
 
 export const DEFAULT_SETTINGS: GranolaSyncSettings = {
@@ -15,6 +16,7 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	templatePath: "Templates/Granola.md",
 	autoSyncOnStartup: false,
 	skipExistingNotes: true,
+	matchAttendeesByEmail: true,
 };
 
 export class GranolaSyncSettingTab extends PluginSettingTab {
@@ -90,6 +92,20 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.skipExistingNotes)
 					.onChange(async (value) => {
 						this.plugin.settings.skipExistingNotes = value;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Match attendees by email")
+			.setDesc(
+				"Link attendees to existing notes that have a matching email in their 'emails' frontmatter property."
+			)
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.matchAttendeesByEmail)
+					.onChange(async (value) => {
+						this.plugin.settings.matchAttendeesByEmail = value;
 						await this.plugin.saveSettings();
 					})
 			);
