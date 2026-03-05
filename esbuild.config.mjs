@@ -22,6 +22,7 @@ const context = await esbuild.context({
 		"@lezer/highlight",
 		"@lezer/lr",
 		...builtinModules,
+		...builtinModules.map((m) => `node:${m}`),
 	],
 	loader: { ".md": "text" },
 	format: "cjs",

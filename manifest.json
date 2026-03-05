@@ -1,9 +1,9 @@
 {
 	"id": "granola-meetings-simple-sync",
 	"name": "Granola Meetings Simple Sync",
-	"version": "1.0.0",
+	"version": "2.0.0",
 	"minAppVersion": "1.0.0",
-	"description": "Sync your Granola meeting notes, summaries, and transcripts to your vault in a simple way (no API usage). Customizable by template. Supports auto-linking of attendee Person notes.",
+	"description": "Sync your Granola meeting notes, summaries, and transcripts to your vault via Granola's official MCP API. Customizable by template. Supports auto-linking of attendee Person notes.",
 	"author": "Phil Freo",
 	"isDesktopOnly": true
 }

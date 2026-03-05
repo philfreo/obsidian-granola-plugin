@@ -1,25 +1,66 @@
 import { Notice, Plugin, TFile, normalizePath } from "obsidian";
+import type { OAuthTokens, OAuthClientInformationMixed } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
 	GranolaSyncSettings,
 	DEFAULT_SETTINGS,
 	GranolaSyncSettingTab,
 	SYNC_FREQUENCY_MS,
 } from "./settings";
+import { GranolaAuthProvider, type AuthStorage } from "./auth";
+import { GranolaMcpClient } from "./mcp-client";
 import {
-	readGranolaCache,
-	getCurrentUserId,
-	GranolaCache,
-} from "./granola";
+	parseMeetingsResponse,
+	parseTranscriptResponse,
+	buildMeetingData,
+} from "./response-parser";
 import { loadTemplate, applyTemplate, generateFilename } from "./template";
+
+interface PluginData extends GranolaSyncSettings {
+	oauthTokens?: OAuthTokens;
+	oauthClientInfo?: OAuthClientInformationMixed;
+	autoSyncOnStartup?: boolean;
+}
 
 export default class GranolaSyncPlugin extends Plugin {
 	settings: GranolaSyncSettings = DEFAULT_SETTINGS;
+	private pluginData: PluginData = { ...DEFAULT_SETTINGS };
 	private isSyncing = false;
 	private syncIntervalId: number | null = null;
 	private ribbonIconEl: HTMLElement | null = null;
+	private authProvider!: GranolaAuthProvider;
+	private mcpClient!: GranolaMcpClient;
 
 	override async onload(): Promise<void> {
 		await this.loadSettings();
+
+		// Initialize auth + MCP client
+		const storage: AuthStorage = {
+			getTokens: () => this.pluginData.oauthTokens,
+			saveTokens: async (tokens) => {
+				this.pluginData.oauthTokens = tokens;
+				await this.savePluginData();
+			},
+			clearTokens: async () => {
+				delete this.pluginData.oauthTokens;
+				delete this.pluginData.oauthClientInfo;
+				await this.savePluginData();
+			},
+			getClientInfo: () => this.pluginData.oauthClientInfo,
+			saveClientInfo: async (info) => {
+				this.pluginData.oauthClientInfo = info;
+				await this.savePluginData();
+			},
+		};
+		this.authProvider = new GranolaAuthProvider(storage);
+		this.mcpClient = new GranolaMcpClient(this.authProvider);
+
+		// Register OAuth callback handler
+		this.registerObsidianProtocolHandler("granola-auth", (params) => {
+			const code = params.code;
+			if (code) {
+				void this.handleAuthCallback(code);
+			}
+		});
 
 		// Add ribbon icon if enabled
 		this.updateRibbonIcon();
@@ -35,7 +76,6 @@ export default class GranolaSyncPlugin extends Plugin {
 			id: "open-settings",
 			name: "Open settings",
 			callback: () => {
-				// Access the settings modal through the app
 				const appWithSetting = this.app as typeof this.app & {
 					setting: { open: () => void; openTabById: (id: string) => void };
 				};
@@ -49,17 +89,16 @@ export default class GranolaSyncPlugin extends Plugin {
 
 		// Handle startup sync and intervals
 		this.app.workspace.onLayoutReady(() => {
-			// Sync on startup if not manual-only
 			if (this.settings.syncFrequency !== "manual") {
 				void this.syncMeetings();
 			}
-			// Set up recurring sync interval
 			this.setupSyncInterval();
 		});
 	}
 
 	override onunload(): void {
 		this.clearSyncInterval();
+		void this.mcpClient.disconnect();
 	}
 
 	setupSyncInterval(): void {
@@ -91,8 +130,47 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 	}
 
+	isAuthenticated(): boolean {
+		return this.pluginData.oauthTokens !== undefined;
+	}
+
+	async connectAccount(): Promise<void> {
+		try {
+			await this.mcpClient.connect();
+			new Notice("Connected to Granola!");
+		} catch {
+			// Auth redirect likely happened — user will complete in browser
+			new Notice("Opening Granola login in your browser...");
+		}
+	}
+
+	async disconnectAccount(): Promise<void> {
+		await this.mcpClient.disconnect();
+		delete this.pluginData.oauthTokens;
+		delete this.pluginData.oauthClientInfo;
+		await this.savePluginData();
+		new Notice("Disconnected from Granola");
+	}
+
+	private async handleAuthCallback(code: string): Promise<void> {
+		try {
+			await this.mcpClient.finishAuth(code);
+			new Notice("Successfully connected to Granola!");
+
+			// Refresh settings tab if open
+			const appWithSetting = this.app as typeof this.app & {
+				setting: { activeTab?: { display?: () => void } };
+			};
+			appWithSetting.setting.activeTab?.display?.();
+		} catch (error) {
+			console.error("Granola auth callback failed:", error);
+			new Notice("Failed to connect to Granola. Please try again.");
+		}
+	}
+
 	async loadSettings(): Promise<void> {
-		const data = await this.loadData() as Partial<GranolaSyncSettings> & { autoSyncOnStartup?: boolean } | null;
+		const data = (await this.loadData()) as Partial<PluginData> | null;
+		this.pluginData = { ...DEFAULT_SETTINGS, ...data };
 		this.settings = { ...DEFAULT_SETTINGS, ...data };
 
 		// Migrate old autoSyncOnStartup setting
@@ -102,7 +180,12 @@ export default class GranolaSyncPlugin extends Plugin {
 	}
 
 	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+		Object.assign(this.pluginData, this.settings);
+		await this.savePluginData();
+	}
+
+	private async savePluginData(): Promise<void> {
+		await this.saveData(this.pluginData);
 	}
 
 	async syncMeetings(manual = false): Promise<void> {
@@ -117,40 +200,45 @@ export default class GranolaSyncPlugin extends Plugin {
 	}
 
 	private async doSync(manual: boolean): Promise<void> {
+		if (!this.isAuthenticated()) {
+			if (manual) {
+				new Notice("Please connect your Granola account first in plugin settings");
+			}
+			return;
+		}
 
-		// Use defaults for empty settings
 		const folderPathSetting = this.settings.folderPath || DEFAULT_SETTINGS.folderPath;
 		const templatePath = this.settings.templatePath || DEFAULT_SETTINGS.templatePath;
 		const filenamePattern = this.settings.filenamePattern || DEFAULT_SETTINGS.filenamePattern;
 
-		// Read Granola cache
-		const cache = readGranolaCache();
-		if (!cache) {
-			new Notice("Granola not installed or no meetings found");
+		// Connect to MCP if needed
+		if (!this.mcpClient.isConnected) {
+			try {
+				await this.mcpClient.connect();
+			} catch (error) {
+				if (manual) {
+					new Notice("Failed to connect to Granola. Please re-authenticate in settings.");
+				}
+				console.error("Granola: connect failed", error);
+				return;
+			}
+		}
+
+		// List meetings
+		let listResponse: string;
+		try {
+			listResponse = await this.mcpClient.listMeetings(this.settings.syncTimeRange);
+		} catch (error) {
+			if (manual) new Notice("Failed to fetch meetings from Granola");
+			console.error("Granola: listMeetings failed", error);
+			// Disconnect so we retry connection next time
+			await this.mcpClient.disconnect();
 			return;
 		}
 
-		const currentUserId = getCurrentUserId();
-
-		// Filter documents for current user, excluding deleted and incomplete meetings
-		const documents = Object.values(cache.documents).filter(
-			(doc) => {
-				if (currentUserId && doc.user_id !== currentUserId) return false;
-				if (doc.deleted_at) return false;
-
-				// Skip meetings without AI-generated panels (Summary, etc.)
-				// This ensures we wait for Granola to finish processing
-				const panels = cache.documentPanels[doc.id];
-				if (!panels || Object.keys(panels).length === 0) {
-					return false;
-				}
-
-				return true;
-			}
-		);
-
-		if (documents.length === 0) {
-			new Notice("No meetings found in Granola");
+		const listedMeetings = parseMeetingsResponse(listResponse);
+		if (listedMeetings.length === 0) {
+			if (manual) new Notice("No meetings found in Granola");
 			return;
 		}
 
@@ -190,6 +278,21 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 
+		// Filter to meetings that need syncing
+		const meetingsToSync = listedMeetings.filter((m) => {
+			if (this.settings.skipExistingNotes && existingDocs.has(m.id)) {
+				return false;
+			}
+			return true;
+		});
+
+		if (meetingsToSync.length === 0) {
+			if (manual) {
+				new Notice(`All ${listedMeetings.length} meetings already synced`);
+			}
+			return;
+		}
+
 		// Build map of email -> note title for attendee matching
 		const emailToNoteTitle = new Map<string, string>();
 		if (this.settings.matchAttendeesByEmail) {
@@ -208,46 +311,55 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 
+		// Batch fetch meeting details (max 10 per API call)
+		const idsToFetch = meetingsToSync.map((m) => m.id);
+		const allDetails = [];
+
+		for (let i = 0; i < idsToFetch.length; i += 10) {
+			const batch = idsToFetch.slice(i, i + 10);
+			try {
+				const detailsResponse = await this.mcpClient.getMeetings(batch);
+				allDetails.push(...parseMeetingsResponse(detailsResponse));
+			} catch (error) {
+				console.error("Granola: getMeetings batch failed", error);
+			}
+		}
+
 		let created = 0;
 		let updated = 0;
-		let skipped = 0;
+		const skipped = listedMeetings.length - meetingsToSync.length;
 
-		for (const doc of documents) {
+		for (const details of allDetails) {
 			try {
-				const existingFile = existingDocs.get(doc.id);
+				// Optionally fetch transcript
+				let transcript = "";
+				if (this.settings.syncTranscripts) {
+					try {
+						const transcriptResponse = await this.mcpClient.getTranscript(details.id);
+						transcript = parseTranscriptResponse(transcriptResponse);
+					} catch (error) {
+						console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+					}
+				}
+
+				const meetingData = buildMeetingData(details, transcript);
+				const content = applyTemplate(template, meetingData, emailToNoteTitle);
+				const existingFile = existingDocs.get(details.id);
 
 				if (existingFile) {
-					if (this.settings.skipExistingNotes) {
-						skipped++;
-						continue;
-					}
-
-					// Check if Granola data is newer
-					const fileCache = this.app.metadataCache.getFileCache(existingFile);
-					const existingUpdated = fileCache?.frontmatter?.updated as string | undefined;
-					if (existingUpdated && existingUpdated >= doc.updated_at) {
-						skipped++;
-						continue;
-					}
-
-					// Update existing file
-					const content = this.renderDocument(doc.id, cache, template, emailToNoteTitle);
 					await this.app.vault.modify(existingFile, content);
 					updated++;
 				} else {
-					// Create new file
-					const filename = generateFilename(filenamePattern, doc);
+					const filename = generateFilename(filenamePattern, meetingData);
 					const filePath = normalizePath(`${folderPath}/${filename}.md`);
-					const content = this.renderDocument(doc.id, cache, template, emailToNoteTitle);
 					await this.app.vault.create(filePath, content);
 					created++;
 				}
 			} catch (error) {
-				console.error(`Error syncing document ${doc.id}:`, error);
+				console.error(`Error syncing meeting ${details.id}:`, error);
 			}
 		}
 
-		// Show result notice only for manual syncs
 		if (manual) {
 			if (this.settings.skipExistingNotes) {
 				new Notice(`Synced ${created} new meeting${created !== 1 ? "s" : ""} (${skipped} skipped)`);
@@ -255,17 +367,5 @@ export default class GranolaSyncPlugin extends Plugin {
 				new Notice(`Synced ${created} new, ${updated} updated meeting${created + updated !== 1 ? "s" : ""}`);
 			}
 		}
-	}
-
-	private renderDocument(
-		docId: string,
-		cache: GranolaCache,
-		template: string,
-		emailToNoteTitle: Map<string, string>,
-	): string {
-		const doc = cache.documents[docId];
-		const panels = cache.documentPanels[docId];
-		const transcript = cache.transcripts[docId];
-		return applyTemplate(template, doc, panels, transcript, emailToNoteTitle);
 	}
 }

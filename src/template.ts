@@ -1,13 +1,5 @@
 import { App, normalizePath, TFile } from "obsidian";
-import {
-	GranolaDocument,
-	TranscriptEntry,
-	GranolaPanel,
-	prosemirrorToMarkdown,
-	formatPanels,
-	formatTranscript,
-	getMeetingTimes,
-} from "./granola";
+import type { MeetingData, ParsedParticipant } from "./response-parser";
 import DEFAULT_TEMPLATE from "./default-template.md";
 
 export async function loadTemplate(app: App, templatePath: string): Promise<string> {
@@ -31,63 +23,48 @@ export async function loadTemplate(app: App, templatePath: string): Promise<stri
 	return DEFAULT_TEMPLATE;
 }
 
-function resolveAttendeeName(
-	attendee: { name?: string; email?: string; details?: { person?: { name?: { fullName?: string } } } },
+function resolveParticipantName(
+	participant: ParsedParticipant,
 	emailToNoteTitle: Map<string, string>,
 ): string | null {
 	// First, try to match by email to an existing note
-	if (attendee.email) {
-		const noteTitle = emailToNoteTitle.get(attendee.email.toLowerCase());
+	if (participant.email) {
+		const noteTitle = emailToNoteTitle.get(participant.email.toLowerCase());
 		if (noteTitle) return noteTitle;
 	}
 
-	// Fall back to Granola's data
-	return (
-		attendee.name ||
-		attendee.details?.person?.name?.fullName ||
-		attendee.email ||
-		null
-	);
+	return participant.name || participant.email || null;
 }
 
 export function applyTemplate(
 	template: string,
-	doc: GranolaDocument,
-	panels: Record<string, GranolaPanel> | undefined,
-	transcript: TranscriptEntry[] | undefined,
+	meeting: MeetingData,
 	emailToNoteTitle: Map<string, string> = new Map(),
 ): string {
-	const date = doc.created_at.split("T")[0];
-	const times = getMeetingTimes(transcript);
-
 	// Resolve attendee names, preferring matches from vault notes
-	const attendeeNames = (doc.people?.attendees ?? [])
-		.map((a) => resolveAttendeeName(a, emailToNoteTitle))
-		.filter((name): name is string => name !== null && name !== "Unknown");
-
-	const notes = (doc.notes_markdown || prosemirrorToMarkdown(doc.notes)).trim();
-	const enhancedNotes = formatPanels(panels);
-	const formattedTranscript = formatTranscript(transcript);
+	const attendeeNames = meeting.participants
+		.map((p) => resolveParticipantName(p, emailToNoteTitle))
+		.filter((name): name is string => name !== null);
 
 	const variables: Record<string, string> = {
-		granola_id: doc.id,
-		granola_title: doc.title || "Untitled Meeting",
-		granola_date: date,
-		granola_created: doc.created_at,
-		granola_updated: doc.updated_at,
-		granola_private_notes: notes,
-		granola_enhanced_notes: enhancedNotes,
-		granola_transcript: formattedTranscript,
+		granola_id: meeting.id,
+		granola_title: meeting.title,
+		granola_date: meeting.date,
+		granola_created: meeting.created,
+		granola_updated: "",
+		granola_private_notes: meeting.privateNotes,
+		granola_enhanced_notes: meeting.enhancedNotes,
+		granola_transcript: meeting.transcript,
 		granola_attendees: attendeeNames.join(", "),
 		granola_attendees_linked: attendeeNames.map((name) => `[[${name}]]`).join(", "),
 		granola_attendees_list: attendeeNames.map((name) => `  - ${name}`).join("\n"),
 		granola_attendees_linked_list: attendeeNames
 			.map((name) => `  - "[[${name}]]"`)
 			.join("\n"),
-		granola_url: `https://notes.granola.ai/d/${doc.id}`,
-		granola_duration: times?.duration || "",
-		granola_start_time: times?.startTime || "",
-		granola_end_time: times?.endTime || "",
+		granola_url: meeting.url,
+		granola_duration: "",
+		granola_start_time: meeting.startTime,
+		granola_end_time: "",
 	};
 
 	// Process conditional blocks: {{#var}}content{{/var}} - only renders if var is non-empty
@@ -108,13 +85,12 @@ export function sanitizeFilename(name: string): string {
 		.slice(0, 100);
 }
 
-export function generateFilename(pattern: string, doc: GranolaDocument): string {
-	const date = doc.created_at.split("T")[0];
-	const title = sanitizeFilename(doc.title || "Untitled");
-	const id = doc.id.slice(0, 8);
+export function generateFilename(pattern: string, meeting: MeetingData): string {
+	const title = sanitizeFilename(meeting.title);
+	const id = meeting.id.slice(0, 8);
 
 	return pattern
-		.replace("{date}", date)
+		.replace("{date}", meeting.date)
 		.replace("{title}", title)
 		.replace("{id}", id);
 }

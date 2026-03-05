@@ -27,8 +27,6 @@
 		"typescript-eslint": "^8.35.0"
 	},
 	"dependencies": {
-		"@tiptap/pm": "^3.0.0",
-		"@tiptap/starter-kit": "^3.0.0",
-		"@tiptap/static-renderer": "^3.0.0"
+		"@modelcontextprotocol/sdk": "^1.27.1"
 	}
 }

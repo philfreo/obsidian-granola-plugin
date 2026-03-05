@@ -3,8 +3,6 @@ granola_id: {{granola_id}}
 granola_url: {{granola_url}}
 title: "{{granola_title}}"
 date: {{granola_date}}
-created: {{granola_created}}
-updated: {{granola_updated}}
 attendees:
 {{granola_attendees_linked_list}}
 tags:
@@ -15,7 +13,9 @@ tags:
 
 {{granola_private_notes}}
 {{/granola_private_notes}}
+{{#granola_enhanced_notes}}
 {{granola_enhanced_notes}}
+{{/granola_enhanced_notes}}
 {{#granola_transcript}}
 
 ## Transcript
