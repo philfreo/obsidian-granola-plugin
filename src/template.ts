@@ -94,3 +94,45 @@ export function generateFilename(pattern: string, meeting: MeetingData): string 
 		.replace("{title}", title)
 		.replace("{id}", id);
 }
+
+/**
+ * Resolve date tokens in a folder path pattern using the meeting's date.
+ * Supported tokens: {yyyy}, {yy}, {MMMM}, {MMM}, {MM}, {M}, {dd}, {d}
+ */
+export function resolveFolderPath(pattern: string, meeting: MeetingData): string {
+	if (!pattern.includes("{")) return pattern;
+
+	const dateStr = meeting.date || new Date().toISOString().slice(0, 10);
+	const [year, month, day] = dateStr.split("-").map(Number);
+	// Use local date constructor to avoid UTC/timezone shifts
+	const date = new Date(year, month - 1, day);
+
+	const tokens: Record<string, string> = {
+		yyyy: String(date.getFullYear()),
+		yy: String(date.getFullYear()).slice(-2),
+		MMMM: date.toLocaleString("en-US", { month: "long" }),
+		MMM: date.toLocaleString("en-US", { month: "short" }),
+		MM: String(date.getMonth() + 1).padStart(2, "0"),
+		M: String(date.getMonth() + 1),
+		dd: String(date.getDate()).padStart(2, "0"),
+		d: String(date.getDate()),
+	};
+
+	// Order matters: longer tokens must be listed before shorter prefixes (e.g. MMMM before MMM before MM before M)
+	return pattern.replace(
+		/\{(yyyy|yy|MMMM|MMM|MM|M|dd|d)\}/g,
+		(_, token: string) => tokens[token] ?? `{${token}}`,
+	);
+}
+
+/**
+ * Return the static base portion of a folder path pattern (everything before the first token).
+ * e.g. "Meetings/{yyyy}/{MM}" → "Meetings"
+ *      "Meetings" → "Meetings"
+ *      "{yyyy}/{MM}" → ""
+ */
+export function getFolderBasePath(pattern: string): string {
+	const tokenIndex = pattern.indexOf("{");
+	if (tokenIndex === -1) return pattern;
+	return pattern.slice(0, tokenIndex).replace(/\/+$/, "");
+}

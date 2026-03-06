@@ -50,7 +50,7 @@ BRAT will automatically keep the plugin updated.
 | Time range | Last 30 days | How far back to look for meetings |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
 | Sync transcripts | Off | Include full meeting transcripts (1 extra API call per meeting) |
-| Folder path | `Meetings` | Where to save meeting notes |
+| Folder path | `Meetings` | Where to save meeting notes. Supports date tokens: `{yyyy}`, `{yy}`, `{MM}`, `{M}`, `{MMMM}`, `{MMM}`, `{dd}`, `{d}`. Example: `Meetings/{yyyy}/{MM}` |
 | Filename pattern | `{date} {title}` | Pattern for filenames. Supports `{date}`, `{title}`, `{id}` |
 | Template path | `Templates/Granola.md` | Path to your template file |
 | Show ribbon icon | On | Show a sync button in the left sidebar |

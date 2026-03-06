@@ -13,7 +13,7 @@ import {
 	parseTranscriptResponse,
 	buildMeetingData,
 } from "./response-parser";
-import { loadTemplate, applyTemplate, generateFilename } from "./template";
+import { loadTemplate, applyTemplate, generateFilename, resolveFolderPath, getFolderBasePath } from "./template";
 
 interface PluginData extends GranolaSyncSettings {
 	oauthTokens?: OAuthTokens;
@@ -199,6 +199,23 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 	}
 
+	private async ensureFolderPath(folderPath: string): Promise<void> {
+		if (!folderPath) return;
+		if (this.app.vault.getAbstractFileByPath(folderPath)) return;
+
+		const lastSlash = folderPath.lastIndexOf("/");
+		if (lastSlash > 0) {
+			await this.ensureFolderPath(folderPath.slice(0, lastSlash));
+		}
+
+		try {
+			await this.app.vault.createFolder(folderPath);
+		} catch {
+			// Ignore if it was created concurrently
+			if (!this.app.vault.getAbstractFileByPath(folderPath)) throw new Error(`Failed to create folder: ${folderPath}`);
+		}
+	}
+
 	private async doSync(manual: boolean): Promise<void> {
 		if (!this.isAuthenticated()) {
 			if (manual) {
@@ -207,7 +224,7 @@ export default class GranolaSyncPlugin extends Plugin {
 			return;
 		}
 
-		const folderPathSetting = this.settings.folderPath || DEFAULT_SETTINGS.folderPath;
+		const folderPathPattern = this.settings.folderPath || DEFAULT_SETTINGS.folderPath;
 		const templatePath = this.settings.templatePath || DEFAULT_SETTINGS.templatePath;
 		const filenamePattern = this.settings.filenamePattern || DEFAULT_SETTINGS.filenamePattern;
 
@@ -252,12 +269,11 @@ export default class GranolaSyncPlugin extends Plugin {
 			return;
 		}
 
-		// Ensure folder exists
-		const folderPath = normalizePath(folderPathSetting);
-		const folder = this.app.vault.getAbstractFileByPath(folderPath);
-		if (!folder) {
+		// Ensure base folder exists (the static prefix before any date tokens)
+		const baseFolderPath = normalizePath(getFolderBasePath(folderPathPattern));
+		if (baseFolderPath) {
 			try {
-				await this.app.vault.createFolder(folderPath);
+				await this.ensureFolderPath(baseFolderPath);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : "Unknown error";
 				new Notice(`Error creating folder: ${message}`);
@@ -266,11 +282,12 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 
 		// Build map of existing granola_id -> file
+		// Search within the base folder (or entire vault if pattern has no static prefix)
 		const existingDocs = new Map<string, TFile>();
 		const files = this.app.vault.getMarkdownFiles();
-		const folderPrefix = folderPath + "/";
+		const folderPrefix = baseFolderPath ? baseFolderPath + "/" : "";
 		for (const file of files) {
-			if (!file.path.startsWith(folderPrefix)) continue;
+			if (folderPrefix && !file.path.startsWith(folderPrefix)) continue;
 			const fileCache = this.app.metadataCache.getFileCache(file);
 			const granolaId = fileCache?.frontmatter?.granola_id as string | undefined;
 			if (granolaId) {
@@ -350,8 +367,10 @@ export default class GranolaSyncPlugin extends Plugin {
 					await this.app.vault.modify(existingFile, content);
 					updated++;
 				} else {
+					const meetingFolderPath = normalizePath(resolveFolderPath(folderPathPattern, meetingData));
+					await this.ensureFolderPath(meetingFolderPath);
 					const filename = generateFilename(filenamePattern, meetingData);
-					const filePath = normalizePath(`${folderPath}/${filename}.md`);
+					const filePath = normalizePath(`${meetingFolderPath}/${filename}.md`);
 					await this.app.vault.create(filePath, content);
 					created++;
 				}
