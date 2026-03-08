@@ -161,7 +161,11 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Folder path")
-			.setDesc("Where to save meeting notes in your vault")
+			.setDesc(
+				"Where to save meeting notes in your vault. " +
+				"Use date tokens to organize by date: {yyyy}, {yy}, {MM}, {M}, {MMMM}, {MMM}, {dd}, {d}. " +
+				"Example: Meetings/{yyyy}/{MM}"
+			)
 			.addText((text) =>
 				text
 					.setPlaceholder("Meetings")
