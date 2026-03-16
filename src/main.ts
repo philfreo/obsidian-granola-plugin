@@ -332,7 +332,7 @@ export default class GranolaSyncPlugin extends Plugin {
 		for (const details of allDetails) {
 			try {
 				// Skip meetings still in progress (no summary generated yet)
-				if (!details.summary.trim()) {
+				if (!details.summary.trim() || details.summary.trim() === "No summary") {
 					continue;
 				}
 
