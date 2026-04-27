@@ -14,6 +14,7 @@ import {
 	buildMeetingData,
 } from "./response-parser";
 import { loadTemplate, applyTemplate, generateFilename } from "./template";
+import { resolveFolder } from "./routing";
 
 interface PluginData extends GranolaSyncSettings {
 	oauthTokens?: OAuthTokens;
@@ -177,6 +178,24 @@ export default class GranolaSyncPlugin extends Plugin {
 		if (data?.autoSyncOnStartup !== undefined && !data.syncFrequency) {
 			this.settings.syncFrequency = data.autoSyncOnStartup ? "startup" : "manual";
 		}
+
+		// Migrate routing rules: legacy `flags` field is folded into `pattern`
+		// using /pattern/flags slash syntax. Rules with the default flag "i"
+		// just have the field stripped (default is unchanged).
+		let migratedRouting = false;
+		for (const rule of this.settings.routingRules) {
+			const legacy = rule as typeof rule & { flags?: string };
+			if (legacy.flags && legacy.flags !== "i") {
+				const escaped = rule.pattern.replace(/\//g, "\\/");
+				rule.pattern = `/${escaped}/${legacy.flags}`;
+				migratedRouting = true;
+			}
+			if ("flags" in legacy) {
+				delete legacy.flags;
+				migratedRouting = true;
+			}
+		}
+		if (migratedRouting) await this.saveSettings();
 	}
 
 	async saveSettings(): Promise<void> {
@@ -186,6 +205,18 @@ export default class GranolaSyncPlugin extends Plugin {
 
 	private async savePluginData(): Promise<void> {
 		await this.saveData(this.pluginData);
+	}
+
+	private async ensureFolder(path: string): Promise<void> {
+		const normalized = normalizePath(path);
+		if (!normalized || normalized === "/" || normalized === ".") return;
+		if (this.app.vault.getAbstractFileByPath(normalized)) return;
+		try {
+			await this.app.vault.createFolder(normalized);
+		} catch (error) {
+			// Folder may have been created concurrently; only re-throw if it still doesn't exist.
+			if (!this.app.vault.getAbstractFileByPath(normalized)) throw error;
+		}
 	}
 
 	async syncMeetings(manual = false): Promise<void> {
@@ -252,25 +283,13 @@ export default class GranolaSyncPlugin extends Plugin {
 			return;
 		}
 
-		// Ensure folder exists
 		const folderPath = normalizePath(folderPathSetting);
-		const folder = this.app.vault.getAbstractFileByPath(folderPath);
-		if (!folder) {
-			try {
-				await this.app.vault.createFolder(folderPath);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : "Unknown error";
-				new Notice(`Error creating folder: ${message}`);
-				return;
-			}
-		}
 
-		// Build map of existing granola_id -> file
+		// Build map of existing granola_id -> file (scan whole vault so we find
+		// notes even if a routing rule has changed their destination folder).
 		const existingDocs = new Map<string, TFile>();
 		const files = this.app.vault.getMarkdownFiles();
-		const folderPrefix = folderPath + "/";
 		for (const file of files) {
-			if (!file.path.startsWith(folderPrefix)) continue;
 			const fileCache = this.app.metadataCache.getFileCache(file);
 			const granolaId = fileCache?.frontmatter?.granola_id as string | undefined;
 			if (granolaId) {
@@ -355,8 +374,12 @@ export default class GranolaSyncPlugin extends Plugin {
 					await this.app.vault.modify(existingFile, content);
 					updated++;
 				} else {
+					const destFolder = normalizePath(
+						resolveFolder(meetingData, this.settings.routingRules, folderPath),
+					);
+					await this.ensureFolder(destFolder);
 					const filename = generateFilename(filenamePattern, meetingData);
-					const filePath = normalizePath(`${folderPath}/${filename}.md`);
+					const filePath = normalizePath(`${destFolder}/${filename}.md`);
 					await this.app.vault.create(filePath, content);
 					created++;
 				}

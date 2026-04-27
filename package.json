@@ -8,7 +8,7 @@
 		"lint": "eslint .",
 		"typecheck": "tsc --noEmit",
 		"build": "node esbuild.config.mjs production",
-		"package": "npm run build && mkdir -p release/granola-meetings-simple-sync && cp main.js manifest.json versions.json release/granola-meetings-simple-sync/ && cd release && zip -r granola-meetings-simple-sync.zip granola-meetings-simple-sync",
+		"package": "npm run build && mkdir -p release/granola-meetings-simple-sync && cp main.js manifest.json versions.json styles.css release/granola-meetings-simple-sync/ && cd release && zip -r granola-meetings-simple-sync.zip granola-meetings-simple-sync",
 		"deploy-local": "source .env && npm run package && cp \"$OBSIDIAN_PLUGINS/granola-meetings-simple-sync/data.json\" release/granola-meetings-simple-sync/data.json 2>/dev/null; rm -rf \"$OBSIDIAN_PLUGINS/granola-meetings-simple-sync\" && mv release/granola-meetings-simple-sync \"$OBSIDIAN_PLUGINS/\"",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},

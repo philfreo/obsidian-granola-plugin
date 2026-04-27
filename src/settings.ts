@@ -1,6 +1,7 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type GranolaSyncPlugin from "./main";
 import type { SyncTimeRange } from "./mcp-client";
+import { RoutingRuleEditModal } from "./rule-edit-modal";
 
 export type SyncFrequency = "manual" | "startup" | "1m" | "15m" | "30m" | "60m" | "12h";
 
@@ -30,6 +31,24 @@ const SYNC_TIME_RANGE_OPTIONS: Record<SyncTimeRange, string> = {
 	last_30_days: "Last 30 days",
 };
 
+export interface RoutingRule {
+	id: string;
+	enabled: boolean;
+	pattern: string; // multi-line; each non-blank line is one regex (logical OR)
+	destinationFolder: string;
+	label?: string;
+}
+
+export function blankRoutingRule(): RoutingRule {
+	return {
+		id: newRoutingRuleId(),
+		enabled: true,
+		pattern: "",
+		destinationFolder: "",
+		label: "",
+	};
+}
+
 export interface GranolaSyncSettings {
 	folderPath: string;
 	filenamePattern: string;
@@ -40,6 +59,7 @@ export interface GranolaSyncSettings {
 	matchAttendeesByEmail: boolean;
 	syncTimeRange: SyncTimeRange;
 	syncTranscripts: boolean;
+	routingRules: RoutingRule[];
 }
 
 export const DEFAULT_SETTINGS: GranolaSyncSettings = {
@@ -52,7 +72,15 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	matchAttendeesByEmail: true,
 	syncTimeRange: "last_30_days",
 	syncTranscripts: false,
+	routingRules: [],
 };
+
+function newRoutingRuleId(): string {
+	if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+		return crypto.randomUUID();
+	}
+	return `rule-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export class GranolaSyncSettingTab extends PluginSettingTab {
 	plugin: GranolaSyncPlugin;
@@ -238,5 +266,133 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		// --- Routing rules section ---
+		new Setting(containerEl)
+			.setName("Routing rules")
+			.setHeading()
+			.addExtraButton((btn) =>
+				btn
+					.setIcon("plus")
+					.setTooltip("Add rule")
+					.onClick(() => {
+						const draft = blankRoutingRule();
+						new RoutingRuleEditModal(
+							this.plugin.app,
+							draft,
+							"create",
+							async (saved) => {
+								this.plugin.settings.routingRules.push(saved);
+								await this.plugin.saveSettings();
+								this.display();
+							},
+						).open();
+					}),
+			);
+
+		const rulesContainer = containerEl.createDiv({ cls: "granola-routing-rules" });
+		this.renderRoutingRules(rulesContainer);
 	}
+
+	private renderRoutingRules(container: HTMLElement): void {
+		container.empty();
+		const rules = this.plugin.settings.routingRules;
+
+		if (rules.length === 0) {
+			const empty = container.createEl("p", { cls: "setting-item-description" });
+			empty.setText("No rules configured. Use the button below to add one.");
+			return;
+		}
+
+		rules.forEach((rule, index) => {
+			const summary = summarizeRule(rule);
+			const setting = new Setting(container)
+				.setName(rule.label?.trim() || `Rule ${index + 1}`)
+				.setDesc(summary)
+				.addToggle((toggle) =>
+					toggle
+						.setTooltip("Enable or disable this rule")
+						.setValue(rule.enabled)
+						.onChange(async (value) => {
+							rule.enabled = value;
+							await this.plugin.saveSettings();
+						}),
+				)
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("pencil")
+						.setTooltip("Edit rule")
+						.onClick(() => {
+							new RoutingRuleEditModal(
+								this.plugin.app,
+								rule,
+								"edit",
+								async (saved) => {
+									Object.assign(rule, saved);
+									await this.plugin.saveSettings();
+									this.display();
+								},
+							).open();
+						}),
+				)
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("arrow-up")
+						.setTooltip("Move up")
+						.setDisabled(index === 0)
+						.onClick(async () => {
+							if (index === 0) return;
+							const tmp = rules[index - 1];
+							rules[index - 1] = rule;
+							rules[index] = tmp;
+							await this.plugin.saveSettings();
+							this.display();
+						}),
+				)
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("arrow-down")
+						.setTooltip("Move down")
+						.setDisabled(index === rules.length - 1)
+						.onClick(async () => {
+							if (index === rules.length - 1) return;
+							const tmp = rules[index + 1];
+							rules[index + 1] = rule;
+							rules[index] = tmp;
+							await this.plugin.saveSettings();
+							this.display();
+						}),
+				)
+				.addExtraButton((btn) =>
+					btn
+						.setIcon("trash")
+						.setTooltip("Delete rule")
+						.onClick(async () => {
+							rules.splice(index, 1);
+							await this.plugin.saveSettings();
+							this.display();
+						}),
+				);
+
+			if (!rule.enabled) {
+				setting.settingEl.addClass("granola-routing-rule-disabled");
+			}
+		});
+	}
+}
+
+function summarizeRule(rule: RoutingRule): string {
+	const lines = rule.pattern
+		.split("\n")
+		.map((l) => l.trim())
+		.filter(Boolean);
+	if (lines.length === 0) {
+		return rule.destinationFolder
+			? `(no pattern) → ${rule.destinationFolder}`
+			: "(no pattern, no destination)";
+	}
+	const first = lines[0].length > 50 ? `${lines[0].slice(0, 47)}...` : lines[0];
+	const more = lines.length > 1 ? ` +${lines.length - 1} more` : "";
+	const dest = rule.destinationFolder.trim() || "(no destination)";
+	return `${first}${more} → ${dest}`;
 }
