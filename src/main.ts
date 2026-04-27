@@ -178,24 +178,6 @@ export default class GranolaSyncPlugin extends Plugin {
 		if (data?.autoSyncOnStartup !== undefined && !data.syncFrequency) {
 			this.settings.syncFrequency = data.autoSyncOnStartup ? "startup" : "manual";
 		}
-
-		// Migrate routing rules: legacy `flags` field is folded into `pattern`
-		// using /pattern/flags slash syntax. Rules with the default flag "i"
-		// just have the field stripped (default is unchanged).
-		let migratedRouting = false;
-		for (const rule of this.settings.routingRules) {
-			const legacy = rule as typeof rule & { flags?: string };
-			if (legacy.flags && legacy.flags !== "i") {
-				const escaped = rule.pattern.replace(/\//g, "\\/");
-				rule.pattern = `/${escaped}/${legacy.flags}`;
-				migratedRouting = true;
-			}
-			if ("flags" in legacy) {
-				delete legacy.flags;
-				migratedRouting = true;
-			}
-		}
-		if (migratedRouting) await this.saveSettings();
 	}
 
 	async saveSettings(): Promise<void> {
