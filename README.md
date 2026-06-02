@@ -30,9 +30,9 @@ Hopefully Obsidian community plugin directory inclusion will come soon. In the m
 BRAT will automatically keep the plugin updated.
 
 ### Manual Installation
-1. Download the zip from the [latest release](https://github.com/philfreo/obsidian-granola-plugin/releases)
-2. Extract to `<vault>/.obsidian/plugins/`
-3. Enable the plugin in Settings → Community plugins
+1. Create a folder `<vault>/.obsidian/plugins/granola-meetings-simple-sync/`
+2. Download `main.js` and `manifest.json` from the [latest release](https://github.com/philfreo/obsidian-granola-plugin/releases) into that folder
+3. Reload Obsidian, then enable the plugin in Settings → Community plugins
 
 ## Setup
 
