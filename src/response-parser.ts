@@ -93,6 +93,31 @@ export function parseParticipants(text: string): ParsedParticipant[] {
 }
 
 /**
+ * Parse the get_account_info response into a human-readable label,
+ * preferring an email address, then a name. Returns "" if nothing usable.
+ */
+export function parseAccountInfo(text: string): string {
+	if (!text?.trim()) return "";
+
+	// Try structured JSON first.
+	try {
+		const data = JSON.parse(text) as Record<string, unknown>;
+		const candidates = [data.email, data.name, data.display_name, data.full_name];
+		for (const c of candidates) {
+			if (typeof c === "string" && c.trim()) return c.trim();
+		}
+	} catch {
+		// not JSON — fall through to text scraping
+	}
+
+	// Fall back to scraping an email address out of the text.
+	const emailMatch = text.match(/[^\s<>"]+@[^\s<>"]+\.[^\s<>"]+/);
+	if (emailMatch) return emailMatch[0];
+
+	return text.trim().split("\n")[0].trim();
+}
+
+/**
  * Parse transcript response (JSON with id, title, transcript fields)
  */
 export function parseTranscriptResponse(text: string): string {

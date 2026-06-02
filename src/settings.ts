@@ -66,32 +66,48 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		// --- Granola account section ---
-		new Setting(containerEl).setName("Granola account").setHeading();
+		// --- Granola accounts section ---
+		new Setting(containerEl).setName("Granola accounts").setHeading();
 
-		if (this.plugin.isAuthenticated()) {
-			new Setting(containerEl)
-				.setName("Connected to Granola")
-				.setDesc("Your account is connected and ready to sync.")
-				.addButton((button) =>
-					button
-						.setButtonText("Disconnect")
-						.setWarning()
-						.onClick(async () => {
-							await this.plugin.disconnectAccount();
-							this.display();
-						})
-				);
-		} else {
+		const connectedAccounts = this.plugin.accounts.filter((a) => a.oauthTokens !== undefined);
+
+		if (connectedAccounts.length === 0) {
 			new Setting(containerEl)
 				.setName("Not connected")
-				.setDesc("Connect your Granola account to sync meetings via the official API.")
+				.setDesc("Connect a Granola account to sync meetings via the official API.")
 				.addButton((button) =>
 					button
 						.setButtonText("Connect to Granola")
 						.setCta()
 						.onClick(() => {
-							void this.plugin.connectAccount();
+							void this.plugin.addAccount();
+						})
+				);
+		} else {
+			for (const account of connectedAccounts) {
+				new Setting(containerEl)
+					.setName(account.label || "Connected account")
+					.setDesc(account.label ? "Connected and ready to sync." : "Connected. (Account name unavailable.)")
+					.addButton((button) =>
+						button
+							.setButtonText("Disconnect")
+							.setWarning()
+							.onClick(async () => {
+								await this.plugin.disconnectAccount(account.id);
+								this.display();
+							})
+					);
+			}
+
+			new Setting(containerEl)
+				.setName("Add another account")
+				.setDesc("Connect an additional Granola account to also sync into the same folder.")
+				.addButton((button) =>
+					button
+						.setButtonText("Add Granola account")
+						.setCta()
+						.onClick(() => {
+							void this.plugin.addAccount();
 						})
 				);
 		}

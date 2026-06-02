@@ -70,6 +70,10 @@ export class GranolaMcpClient {
 		return this.callToolText("get_meeting_transcript", { meeting_id: meetingId });
 	}
 
+	async getAccountInfo(): Promise<string> {
+		return this.callToolText("get_account_info", {});
+	}
+
 	private async callToolText(name: string, args: Record<string, unknown>): Promise<string> {
 		if (!this.client) {
 			throw new Error("Not connected to Granola");

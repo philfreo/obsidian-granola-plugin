@@ -7,6 +7,7 @@ This plugin uses [Granola's official MCP API](https://docs.granola.ai/help-cente
 ## Features
 
 - **Official API**: Uses Granola's MCP API with OAuth authentication
+- **Multiple accounts**: Connect more than one Granola account and sync them all into the same vault
 - **Auto-sync**: Automatically sync meetings at configurable intervals (1m to 12h)
 - **Template-based**: Customize output format with your own template
 - **Smart deduplication**: Tracks meetings by ID to avoid duplicates
@@ -40,6 +41,8 @@ BRAT will automatically keep the plugin updated.
 3. Authorize the plugin in your browser
 4. You'll be redirected back to Obsidian automatically
 5. Meetings will start syncing!
+
+To sync more than one Granola account, click **Add Granola account** in settings and repeat the OAuth flow. All connected accounts sync into the same folder, deduplicated by meeting ID.
 
 ## Settings
 
