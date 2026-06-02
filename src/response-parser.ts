@@ -93,19 +93,32 @@ export function parseParticipants(text: string): ParsedParticipant[] {
 }
 
 /**
- * Parse the get_account_info response into a human-readable label,
- * preferring an email address, then a name. Returns "" if nothing usable.
+ * Parse the get_account_info response into a human-readable label.
+ *
+ * The API returns JSON like:
+ *   { "email": "phil@close.com",
+ *     "active_workspace": { "id": "...", "display_name": "Close" } }
+ *
+ * We label the account by email, appending the workspace name when present
+ * (e.g. "phil@close.com (Close)") so multiple accounts are easy to tell apart.
+ * Falls back to scraping an email if the response isn't the expected JSON.
  */
 export function parseAccountInfo(text: string): string {
 	if (!text?.trim()) return "";
 
-	// Try structured JSON first.
 	try {
-		const data = JSON.parse(text) as Record<string, unknown>;
-		const candidates = [data.email, data.name, data.display_name, data.full_name];
-		for (const c of candidates) {
-			if (typeof c === "string" && c.trim()) return c.trim();
-		}
+		const data = JSON.parse(text) as {
+			email?: unknown;
+			active_workspace?: { display_name?: unknown } | null;
+		};
+		const email = typeof data.email === "string" ? data.email.trim() : "";
+		const workspace =
+			typeof data.active_workspace?.display_name === "string"
+				? data.active_workspace.display_name.trim()
+				: "";
+		if (email && workspace) return `${email} (${workspace})`;
+		if (email) return email;
+		if (workspace) return workspace;
 	} catch {
 		// not JSON — fall through to text scraping
 	}
