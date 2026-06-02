@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   build:
@@ -24,8 +26,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build and package
-        run: npm run package
+      - name: Build
+        run: npm run build
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'main.js'
 
       - name: Create release
         env:
@@ -35,5 +42,4 @@ jobs:
           gh release create "$tag" \
             --title="$tag" \
             --generate-notes \
-            main.js manifest.json \
-            release/granola-meetings-simple-sync.zip
+            main.js manifest.json
