@@ -514,7 +514,7 @@ interface SyncResult {
 }
 
 function generateAccountId(): string {
-	const cryptoObj = globalThis.crypto as Crypto | undefined;
+	const cryptoObj = window.crypto as Crypto | undefined;
 	if (cryptoObj?.randomUUID) {
 		return cryptoObj.randomUUID();
 	}
