@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-granola-simple-plugin",
-	"version": "2.1.1",
+	"version": "2.1.2",
 	"description": "Sync your Granola meeting notes to Obsidian",
 	"main": "main.js",
 	"scripts": {
