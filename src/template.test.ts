@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyTemplate, sanitizeFilename, generateFilename } from "./template";
+import { applyTemplate, sanitizeFilename, generateFilename, getFolderBasePath, resolveDatePattern } from "./template";
 import type { MeetingData } from "./response-parser";
 
 function meeting(overrides: Partial<MeetingData> = {}): MeetingData {
@@ -74,10 +74,54 @@ describe("sanitizeFilename", () => {
 	});
 });
 
+describe("resolveDatePattern", () => {
+	it("expands date format tokens in folder paths", () => {
+		expect(resolveDatePattern("Granola/{date:YYYY/MM/DD}", "2026-03-03")).toBe("Granola/2026/03/03");
+		expect(resolveDatePattern("Granola/{date:YY/M/D}", "2026-03-03")).toBe("Granola/26/3/3");
+		expect(resolveDatePattern("Granola/{date:MMMM}/{date:MMM}", "2026-03-03")).toBe("Granola/March/Mar");
+	});
+
+	it("expands {date} without a format as ISO date", () => {
+		expect(resolveDatePattern("Granola/{date}", "2026-03-03")).toBe("Granola/2026-03-03");
+	});
+
+	it("leaves unknown folder path placeholders untouched", () => {
+		expect(resolveDatePattern("Granola/{date:YYYY}/{unknown}", "2026-03-03")).toBe("Granola/2026/{unknown}");
+	});
+});
+
+describe("getFolderBasePath", () => {
+	it("returns the static prefix before the first date token", () => {
+		expect(getFolderBasePath("Granola/{date:YYYY/MM/DD}")).toBe("Granola");
+		expect(getFolderBasePath("Granola/Meetings/{date}")).toBe("Granola/Meetings");
+	});
+
+	it("returns the whole path when no date tokens are present", () => {
+		expect(getFolderBasePath("Meetings")).toBe("Meetings");
+	});
+});
+
 describe("generateFilename", () => {
 	it("expands the date, title, and id placeholders", () => {
 		expect(generateFilename("{date} {title}", meeting())).toBe("2026-03-03 Weekly Sync");
 		expect(generateFilename("{id}-{title}", meeting())).toBe("abc12345-Weekly Sync");
+	});
+
+	it("expands formatted date placeholders", () => {
+		expect(generateFilename("{date:YYYY/MM/DD} {title}", meeting())).toBe("2026/03/03 Weekly Sync");
+		expect(generateFilename("{date:YYYY-MM}", meeting())).toBe("2026-03");
+		expect(generateFilename("{date:YY-M-D}", meeting())).toBe("26-3-3");
+		expect(generateFilename("{date:MMMM}-{date:MMM}", meeting())).toBe("March-Mar");
+	});
+
+	it("expands repeated placeholders", () => {
+		expect(generateFilename("{date} {date} {title} {title} {id} {id}", meeting())).toBe(
+			"2026-03-03 2026-03-03 Weekly Sync Weekly Sync abc12345 abc12345",
+		);
+	});
+
+	it("leaves unknown filename placeholders untouched", () => {
+		expect(generateFilename("{date} {unknown} {title}", meeting())).toBe("2026-03-03 {unknown} Weekly Sync");
 	});
 
 	it("sanitizes the title within the filename", () => {

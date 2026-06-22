@@ -1,4 +1,4 @@
-import { App, normalizePath, TFile } from "obsidian";
+import { App, moment, normalizePath, TFile } from "obsidian";
 import type { MeetingData, ParsedParticipant } from "./response-parser";
 import DEFAULT_TEMPLATE from "./default-template.md";
 
@@ -85,12 +85,28 @@ export function sanitizeFilename(name: string): string {
 		.slice(0, 100);
 }
 
+function formatMeetingDate(date: string, format = "YYYY-MM-DD"): string {
+	const parseDate = moment as unknown as (input: string, format: string) => { format: (format: string) => string };
+	return parseDate(date, "YYYY-MM-DD").format(format);
+}
+
+export function resolveDatePattern(pattern: string, date: string): string {
+	return pattern.replace(/\{date(?::([^}]+))?\}/g, (_, format: string | undefined) =>
+		formatMeetingDate(date, format),
+	);
+}
+
+export function getFolderBasePath(folderPattern: string): string {
+	const firstToken = folderPattern.search(/\{date(?::[^}]+)?\}/);
+	if (firstToken === -1) return folderPattern;
+	return folderPattern.slice(0, firstToken).replace(/\/+$/, "");
+}
+
 export function generateFilename(pattern: string, meeting: MeetingData): string {
 	const title = sanitizeFilename(meeting.title);
 	const id = meeting.id.slice(0, 8);
 
-	return pattern
-		.replace("{date}", meeting.date)
-		.replace("{title}", title)
-		.replace("{id}", id);
+	return resolveDatePattern(pattern, meeting.date)
+		.replace(/\{title\}/g, title)
+		.replace(/\{id\}/g, id);
 }
