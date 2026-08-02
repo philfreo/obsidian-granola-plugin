@@ -30,6 +30,14 @@ const SYNC_TIME_RANGE_OPTIONS: Record<SyncTimeRange, string> = {
 	last_30_days: "Last 30 days",
 };
 
+export type ExistingNoteSearchScope = "syncFolder" | "entireVault" | "specificFolders";
+
+const EXISTING_NOTE_SEARCH_SCOPE_OPTIONS: Record<ExistingNoteSearchScope, string> = {
+	syncFolder: "Sync folder only",
+	entireVault: "Entire vault",
+	specificFolders: "Specific folders",
+};
+
 export interface GranolaSyncSettings {
 	folderPath: string;
 	filenamePattern: string;
@@ -40,6 +48,8 @@ export interface GranolaSyncSettings {
 	matchAttendeesByEmail: boolean;
 	syncTimeRange: SyncTimeRange;
 	syncTranscripts: boolean;
+	existingNoteSearchScope: ExistingNoteSearchScope;
+	specificSearchFolders: string[];
 }
 
 export const DEFAULT_SETTINGS: GranolaSyncSettings = {
@@ -52,6 +62,8 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	matchAttendeesByEmail: true,
 	syncTimeRange: "last_30_days",
 	syncTranscripts: false,
+	existingNoteSearchScope: "syncFolder",
+	specificSearchFolders: [],
 };
 
 export class GranolaSyncSettingTab extends PluginSettingTab {
@@ -256,6 +268,44 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("Existing note search scope")
+			.setDesc(
+				"Where to look for previously synced notes (matched by their Granola meeting ID in frontmatter). Search beyond the sync folder so notes you've moved elsewhere in your vault aren't re-created as duplicates."
+			)
+			.addDropdown((dropdown) => {
+				for (const [value, label] of Object.entries(EXISTING_NOTE_SEARCH_SCOPE_OPTIONS)) {
+					dropdown.addOption(value, label);
+				}
+				dropdown
+					.setValue(this.plugin.settings.existingNoteSearchScope)
+					.onChange(async (value) => {
+						this.plugin.settings.existingNoteSearchScope = value as ExistingNoteSearchScope;
+						await this.plugin.saveSettings();
+						this.display();
+					});
+			});
+
+		if (this.plugin.settings.existingNoteSearchScope === "specificFolders") {
+			new Setting(containerEl)
+				.setName("Folders to search")
+				.setDesc(
+					"Folder paths to search for existing notes, one per line (subfolders included). The sync folder is always searched."
+				)
+				.addTextArea((text) =>
+					text
+						.setPlaceholder("One folder path per line")
+						.setValue(this.plugin.settings.specificSearchFolders.join("\n"))
+						.onChange(async (value) => {
+							this.plugin.settings.specificSearchFolders = value
+								.split("\n")
+								.map((f) => f.trim())
+								.filter((f) => f.length > 0);
+							await this.plugin.saveSettings();
+						})
+				);
+		}
 
 		new Setting(containerEl)
 			.setName("Match attendees by email")

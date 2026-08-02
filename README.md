@@ -60,6 +60,7 @@ To sync more than one Granola account, click **Add Granola account** in settings
 | Template path | `Templates/Granola.md` | Path to your template file |
 | Show ribbon icon | On | Show a sync button in the left sidebar |
 | Skip existing notes | On | Don't overwrite notes you've edited |
+| Existing note search scope | Sync folder only | Where to look for previously synced notes (matched by `granola_id`). Choose "Entire vault" (or "Specific folders") so notes you've moved out of the sync folder aren't re-created as duplicates |
 | Match attendees by email | On | Link attendees to notes with matching email in frontmatter |
 
 ## Usage

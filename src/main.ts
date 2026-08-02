@@ -367,12 +367,10 @@ export default class GranolaSyncPlugin extends Plugin {
 		// Build map of existing granola_id -> file (shared across all accounts)
 		const existingDocs = new Map<string, TFile>();
 		const files = this.app.vault.getMarkdownFiles();
-		const folderPrefix = folderPath + "/";
-		for (const file of files) {
-			if (!file.path.startsWith(folderPrefix)) continue;
+		for (const file of this.getExistingNoteSearchFiles(files, folderPath)) {
 			const fileCache = this.app.metadataCache.getFileCache(file);
 			const granolaId = fileCache?.frontmatter?.granola_id as string | undefined;
-			if (granolaId) {
+			if (granolaId && !existingDocs.has(granolaId)) {
 				existingDocs.set(granolaId, file);
 			}
 		}
@@ -432,6 +430,34 @@ export default class GranolaSyncPlugin extends Plugin {
 				message += `. ${failedAccounts} account${failedAccounts !== 1 ? "s" : ""} failed — check console.`;
 			}
 			new Notice(message);
+		}
+	}
+
+	/**
+	 * Files to check for previously synced notes, per the configured search
+	 * scope. The sync folder is always included and ordered first so its copy
+	 * wins if the same granola_id exists both there and elsewhere.
+	 */
+	private getExistingNoteSearchFiles(files: TFile[], folderPath: string): TFile[] {
+		const folderPrefix = folderPath + "/";
+		const inSyncFolder = files.filter((f) => f.path.startsWith(folderPrefix));
+
+		switch (this.settings.existingNoteSearchScope) {
+			case "entireVault":
+				return [...inSyncFolder, ...files.filter((f) => !f.path.startsWith(folderPrefix))];
+			case "specificFolders": {
+				const prefixes = this.settings.specificSearchFolders
+					.map((f) => normalizePath(f))
+					.filter((f) => f.length > 0 && f !== "/")
+					.map((f) => f + "/");
+				const elsewhere = files.filter(
+					(f) =>
+						!f.path.startsWith(folderPrefix) && prefixes.some((p) => f.path.startsWith(p))
+				);
+				return [...inSyncFolder, ...elsewhere];
+			}
+			default:
+				return inSyncFolder;
 		}
 	}
 
