@@ -12,11 +12,20 @@ import { syncFolderFirst } from "./note-scope";
 import {
 	parseMeetingsResponse,
 	parseTranscriptResponse,
+	isTranscriptErrorResponse,
+	extractStoredTranscript,
 	parseAccountInfo,
 	buildMeetingData,
 	excludeSelf,
 } from "./response-parser";
 import { loadTemplate, applyTemplate, getFolderBasePath, resolveNotePath } from "./template";
+
+const MAX_TRANSCRIPT_FETCHES_PER_ACCOUNT_SYNC = 4;
+const TRANSCRIPT_FETCH_SPACING_MS = 65_000;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
 
 export interface GranolaAccount {
 	id: string;
@@ -603,6 +612,9 @@ export default class GranolaSyncPlugin extends Plugin {
 
 		let created = 0;
 		let updated = 0;
+		let transcriptFetches = 0;
+		let lastTranscriptFetchAt = 0;
+		let transcriptRateLimited = false;
 
 		for (const details of allDetails) {
 			try {
@@ -611,15 +623,47 @@ export default class GranolaSyncPlugin extends Plugin {
 					continue;
 				}
 
-				// Optionally fetch transcript
+				const existingFile = ctx.existingDocs.get(details.id);
+
+				// Reuse a valid stored transcript. Transcript calls are the expensive,
+				// rate-limited part of the API and existing notes do not need to fetch
+				// the same immutable transcript every 15 minutes.
 				let transcript = "";
 				if (this.settings.syncTranscripts) {
-					try {
-						const transcriptResponse = await mcp.getTranscript(details.id);
-						transcript = parseTranscriptResponse(transcriptResponse);
-					} catch (error) {
-						console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+					if (existingFile) {
+						transcript = extractStoredTranscript(await this.app.vault.read(existingFile));
 					}
+
+					if (
+						!transcript &&
+						!transcriptRateLimited &&
+						transcriptFetches < MAX_TRANSCRIPT_FETCHES_PER_ACCOUNT_SYNC
+					) {
+						try {
+							const elapsed = Date.now() - lastTranscriptFetchAt;
+							if (lastTranscriptFetchAt && elapsed < TRANSCRIPT_FETCH_SPACING_MS) {
+								await sleep(TRANSCRIPT_FETCH_SPACING_MS - elapsed);
+							}
+							lastTranscriptFetchAt = Date.now();
+							transcriptFetches++;
+							const transcriptResponse = await mcp.getTranscript(details.id);
+							if (isTranscriptErrorResponse(transcriptResponse)) {
+								transcriptRateLimited = true;
+								throw new Error(`Granola returned a transient transcript error: ${transcriptResponse.trim()}`);
+							}
+							transcript = parseTranscriptResponse(transcriptResponse);
+						} catch (error) {
+							console.error(`Granola: transcript fetch failed for ${details.id}`, error);
+							// Never replace an existing note with an API error or an empty
+							// transcript. A later paced sync will retry it.
+							if (existingFile) continue;
+						}
+					}
+
+					// A rate limit or the per-sync request budget can leave later
+					// meetings without a transcript fetch. Never let those meetings
+					// fall through to a rewrite that removes their stored content.
+					if (!transcript && existingFile) continue;
 				}
 
 				const meetingData = buildMeetingData(details, transcript);
@@ -627,8 +671,6 @@ export default class GranolaSyncPlugin extends Plugin {
 					meetingData.participants = excludeSelf(meetingData.participants, account.email);
 				}
 				const content = applyTemplate(ctx.template, meetingData, ctx.emailToNoteTitle);
-				const existingFile = ctx.existingDocs.get(details.id);
-
 				if (existingFile) {
 					await this.app.vault.modify(existingFile, content);
 					updated++;

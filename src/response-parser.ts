@@ -246,6 +246,37 @@ export function parseTranscriptResponse(text: string): string {
 	return text.trim();
 }
 
+/**
+ * Granola's MCP endpoint can return a short plain-text error as successful tool
+ * content. Without this guard the error body is indistinguishable from a
+ * legacy plain-text transcript and gets written into the note.
+ */
+export function isTranscriptErrorResponse(text: string): boolean {
+	const normalized = text.trim().replace(/\s+/g, " ");
+	if (!normalized || normalized.length > 500) return false;
+	return /^(?:rate limit exceeded|too many requests|request rate limited|temporarily unavailable|service unavailable)(?:\b|[.:])/i.test(
+		normalized,
+	);
+}
+
+/**
+ * Recover the transcript rendered by the plugin's default template so an
+ * existing note can be refreshed without downloading the same immutable
+ * transcript again. Known API error bodies are treated as missing, allowing a
+ * later paced sync to repair notes written by older plugin versions.
+ */
+export function extractStoredTranscript(content: string): string {
+	const section = content.match(/(?:^|\n)## Transcript\s*\n([\s\S]*?)(?=\n##\s|\n---\s*$|$)/);
+	if (!section) return "";
+
+	let body = section[1].trim();
+	if (body.startsWith("```")) {
+		body = body.replace(/^```[^\n]*\n?/, "").replace(/\n?```\s*$/, "").trim();
+	}
+
+	return isTranscriptErrorResponse(body) ? "" : body;
+}
+
 // Speaker labels are capitalized words followed by a colon: "Microphone:",
 // "Speaker:", a participant's name, or "Me:"/"Them:" in older transcripts.
 const SPEAKER_LABEL = "(\\p{Lu}[\\p{L}'’.-]*(?: \\p{Lu}[\\p{L}'’.-]*){0,3}):";
