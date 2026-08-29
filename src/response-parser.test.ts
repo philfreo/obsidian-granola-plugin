@@ -3,6 +3,8 @@ import {
 	parseMeetingsResponse,
 	parseParticipants,
 	parseTranscriptResponse,
+	isTranscriptErrorResponse,
+	extractStoredTranscript,
 	parseAccountInfo,
 	formatTranscriptText,
 	parseGranolaDate,
@@ -244,6 +246,46 @@ describe("parseTranscriptResponse", () => {
 			'{\n  "id": "abc",\n  "title": "A Meeting",\n  "transcript": " Speaker: hello.  Microphone: hi. "\n}',
 		].join("\n");
 		expect(parseTranscriptResponse(response)).toBe("Speaker: hello.  Microphone: hi.");
+	});
+});
+
+describe("isTranscriptErrorResponse", () => {
+	it("recognizes Granola's plain-text rate-limit response", () => {
+		expect(isTranscriptErrorResponse("Rate limit exceeded. Please slow down requests.")).toBe(
+			true,
+		);
+	});
+
+	it("does not reject ordinary transcript text that discusses rate limits", () => {
+		expect(
+			isTranscriptErrorResponse(
+				"Me: The rate limit exceeded our expectations during the test. Them: Good to know.",
+			),
+		).toBe(false);
+	});
+});
+
+describe("extractStoredTranscript", () => {
+	it("extracts the transcript rendered by the default template", () => {
+		expect(
+			extractStoredTranscript(
+				"## Summary\n\nA summary.\n\n## Transcript\n\n**Me:** hello\n\n**Them:** hi\n",
+			),
+		).toBe("**Me:** hello\n\n**Them:** hi");
+	});
+
+	it("unwraps a fenced transcript", () => {
+		expect(extractStoredTranscript("## Transcript\n\n```text\nSpeaker: hello\n```\n")).toBe(
+			"Speaker: hello",
+		);
+	});
+
+	it("treats a stored rate-limit response as missing", () => {
+		expect(
+			extractStoredTranscript(
+				"## Transcript\n\nRate limit exceeded. Please slow down requests.\n",
+			),
+		).toBe("");
 	});
 });
 
