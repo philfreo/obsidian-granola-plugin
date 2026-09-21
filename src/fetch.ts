@@ -5,48 +5,36 @@
  * Node's https module only trusts its own bundled Mozilla CA list, not the OS
  * trust store. On networks with TLS-inspecting proxies (common on corporate
  * machines), this causes "self signed certificate in certificate chain"
- * errors even though the browser/OS trusts the connection fine. To fix that,
- * on macOS we pull the system's trusted root certs and pass them explicitly
- * as extra CAs for every HTTPS request.
+ * errors even though the browser/OS trusts the connection fine. Where
+ * available (tls.getCACertificates, Node 22.9+), we pass Node's bundled CAs
+ * plus the OS trust store as extra CAs for every HTTPS request. On older
+ * Node/Electron runtimes, or if reading the OS store fails, we fall back to
+ * Node's default bundled-only behavior rather than risk trusting nothing.
  */
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage } from "node:http";
-import { execSync } from "node:child_process";
+import tls from "node:tls";
 
 const MAX_REDIRECTS = 5;
 
-let cachedCAs: string[] | null = null;
+// null = not yet computed, undefined = unavailable (use Node's defaults).
+let cachedCAs: string[] | undefined | null = null;
 
-/** Reads trusted root certificates from the macOS keychains. Cached after first call. */
-function getSystemCAs(): string[] {
-	if (cachedCAs) return cachedCAs;
-	if (process.platform !== "darwin") {
-		cachedCAs = [];
+/** Node's bundled CAs plus the OS trust store, when Node exposes them. Cached after first call. */
+function getCACertificates(): string[] | undefined {
+	if (cachedCAs !== null) return cachedCAs;
+	if (typeof tls.getCACertificates !== "function") {
+		cachedCAs = undefined;
 		return cachedCAs;
 	}
 	try {
-		const keychains = [
-			"/System/Library/Keychains/SystemRootCertificates.keychain",
-			"/Library/Keychains/System.keychain",
-		];
-		const pems: string[] = [];
-		for (const kc of keychains) {
-			try {
-				const out = execSync(`security find-certificate -a -p "${kc}"`, {
-					maxBuffer: 1024 * 1024 * 20,
-				}).toString();
-				const matches = out.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
-				if (matches) pems.push(...matches);
-			} catch (e) {
-				// A single keychain being unreadable shouldn't block the others.
-				console.error(`Granola: failed to read keychain ${kc}:`, e);
-			}
-		}
-		cachedCAs = pems;
+		const certs = [...tls.getCACertificates("default"), ...tls.getCACertificates("system")];
+		// An empty ca list would make Node trust nothing, worse than not passing it at all.
+		cachedCAs = certs.length > 0 ? certs : undefined;
 	} catch (e) {
-		console.error("Granola: failed to read system CAs:", e);
-		cachedCAs = [];
+		console.error("Granola: failed to read CA certificates:", e);
+		cachedCAs = undefined;
 	}
 	return cachedCAs;
 }
@@ -60,6 +48,7 @@ function doFetch(input: string | URL, init: RequestInit | undefined, redirectCou
 		const url = typeof input === "string" ? new URL(input) : input;
 		const isHttps = url.protocol === "https:";
 		const fn = isHttps ? httpsRequest : httpRequest;
+		const ca = isHttps ? getCACertificates() : undefined;
 
 		// Convert headers
 		const headers: Record<string, string> = {};
@@ -95,7 +84,7 @@ function doFetch(input: string | URL, init: RequestInit | undefined, redirectCou
 				path: url.pathname + url.search,
 				method: init?.method || "GET",
 				headers,
-				...(isHttps ? { ca: getSystemCAs() } : {}),
+				...(ca ? { ca } : {}),
 			},
 			(res: IncomingMessage) => {
 				// Handle redirects
