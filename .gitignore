@@ -13,6 +13,7 @@ data.json
 
 # Local config
 .env
+CLAUDE.local.md
 
 main.js
 
