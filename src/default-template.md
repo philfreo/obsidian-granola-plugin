@@ -15,7 +15,9 @@ tags:
 {{/granola_private_notes}}
 {{#granola_enhanced_notes}}## Summary
 
-{{granola_enhanced_notes}}
+{{#granola_duration_formatted}}{{granola_start_time}}-{{granola_end_time}} ({{granola_duration_formatted}})
+
+{{/granola_duration_formatted}}{{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
 {{#granola_transcript}}
 

@@ -55,12 +55,14 @@ To sync more than one Granola account, click **Add Granola account** in settings
 | Time range | Last 30 days | How far back to look for meetings |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
 | Only my meetings | On | Sync only meetings you recorded or were listed as a participant in, including notes shared with you. Turn off to also sync every workspace-visible meeting |
-| Sync transcripts | Off | Include full meeting transcripts (1 extra API call per meeting) |
 | Folder path | `Meetings` | Where to save meeting notes. Takes date tokens, so `Meetings/{date:YYYY/MM}` files each meeting under its own month |
 | Filename pattern | `{date} {title}` | Pattern for filenames. Supports `{date}`, `{date:YYYY-MM-DD}`, `{title}`, `{id}` |
 | Template path | `Templates/Granola.md` | Path to your template file |
 | Show ribbon icon | On | Show a sync button in the left sidebar |
 | Skip existing notes | On | Don't overwrite notes you've edited. Existing notes are matched by `granola_id` anywhere in your vault, not just the sync folder, so notes you've moved aren't duplicated |
+| Granola API key | empty | Optional `grn_…` key enabling meeting length and end time. Create it in the Granola desktop app under Settings > Connectors > API keys; needs a Business or Enterprise plan. Stored unencrypted in your vault |
+| Duration format | Compact | How `{{granola_duration_formatted}}` is written: Compact (1h 14m), Long (1 hour 14 minutes), or Minutes only (74 minutes) |
+| Include transcripts | Off | Add the full meeting transcript to each note |
 | Exclude yourself from attendees | On | Leave your own Granola account out of the attendee list |
 | Match attendees by email | On | Link attendees to notes with matching email in frontmatter |
 
@@ -79,10 +81,52 @@ Create a template file to customize how your meeting notes look. Use these varia
 - `{{granola_url}}` - Link to meeting on Granola web
 - `{{granola_start_time}}` - Start time (e.g., "3:00 PM")
 
+### Timing
+
+- `{{granola_end_time}}` - End time (e.g., "3:35 PM")
+- `{{granola_duration_formatted}}` - Length written out (e.g., "1h 14m"), in the style chosen by the "Duration format" setting
+- `{{granola_duration_min}}` - The same length as a plain number of minutes (e.g., "74"), for arithmetic
+
+The MCP API Granola gives the plugin reports no end time and no duration, so
+**these are blank unless you add a Granola API key** in settings. With a key
+the plugin reads the transcript from Granola's REST API instead, where every
+utterance carries its own start and end timestamp, and the length is measured
+rather than guessed. The key needs a Business or Enterprise plan.
+
+A meeting is measured from the time Granola lists for it rather than from the
+first word spoken, so the length covers waiting as well as talking. A call
+booked for 2:00 that got going at 2:06 and held thirty minutes of
+conversation is reported as thirty-six minutes long. Ad-hoc recordings were
+never scheduled, so Granola lists the moment capture began and there is no
+waiting to account for. A recording whose first word lands before its listed
+time is measured from whichever came first.
+
+Both times are rendered in your own locale, following the language Obsidian
+is set to, so a 24-hour locale gets "14:06" where an English one gets
+"2:06 PM".
+
+#### Duration format
+
+`{{granola_duration_formatted}}` is written in one of three styles, chosen
+in settings. Unit names follow the language Obsidian is set to, so a German
+reader gets "1 Std. 14 Min." without configuring anything.
+
+| Setting | 35 min | 60 min | 74 min |
+|---------|--------|--------|--------|
+| Compact (default) | 35m | 1h | 1h 14m |
+| Long | 35 minutes | 1 hour | 1 hour 14 minutes |
+| Minutes only | 35 minutes | 60 minutes | 74 minutes |
+
+A component is left out when it would read as zero, so an hour-long meeting
+is "1h" rather than "1h 0m". Hours are not capped at a day.
+
+For any wording the three styles don't cover, build your own from
+`{{granola_duration_min}}`, which is a plain number of minutes.
+
 ### Content
 - `{{granola_private_notes}}` - Your notes from the meeting
 - `{{granola_enhanced_notes}}` - AI-generated content (Summary, Action Items, etc.)
-- `{{granola_transcript}}` - Full transcript (requires "Sync transcripts" enabled)
+- `{{granola_transcript}}` - Full transcript (requires "Include transcripts" enabled)
 
 ### Attendees
 - `{{granola_attendees}}` - Comma-separated names
@@ -124,7 +168,9 @@ tags:
 {{/granola_private_notes}}
 {{#granola_enhanced_notes}}## Summary
 
-{{granola_enhanced_notes}}
+{{#granola_duration_formatted}}{{granola_start_time}}-{{granola_end_time}} ({{granola_duration_formatted}})
+
+{{/granola_duration_formatted}}{{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
 {{#granola_transcript}}
 

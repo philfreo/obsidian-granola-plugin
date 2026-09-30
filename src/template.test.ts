@@ -6,15 +6,20 @@ import {
 	getFolderBasePath,
 	resolveDatePattern,
 	resolveNotePath,
+	formatDuration,
 } from "./template";
 import type { MeetingData } from "./response-parser";
+import { moment } from "obsidian";
+import DEFAULT_TEMPLATE from "./default-template.md";
 
 function meeting(overrides: Partial<MeetingData> = {}): MeetingData {
 	return {
 		id: "abc12345def",
 		title: "Weekly Sync",
 		date: "2026-03-03",
-		startTime: "3:00 PM",
+		startMinutes: 15 * 60,
+		endMinutes: null,
+		durationMinutes: "",
 		created: "2026-03-03T15:00:00.000Z",
 		url: "https://notes.granola.ai/d/abc12345def",
 		privateNotes: "",
@@ -265,5 +270,170 @@ describe("resolveNotePath", () => {
 			folder: "Meetings",
 			path: "Meetings/Weekly Sync.md",
 		});
+	});
+});
+
+describe("nested conditional blocks", () => {
+	const tpl = "{{#granola_enhanced_notes}}A{{#granola_duration_min}}B{{/granola_duration_min}}C{{/granola_enhanced_notes}}";
+
+	it("renders an inner block when both variables are set", () => {
+		const result = applyTemplate(tpl, meeting({ enhancedNotes: "s", durationMinutes: "30" }));
+		expect(result).toBe("ABC");
+	});
+
+	it("drops an inner block without leaving its markers behind", () => {
+		const result = applyTemplate(tpl, meeting({ enhancedNotes: "s" }));
+		expect(result).toBe("AC");
+	});
+
+	it("drops everything when the outer variable is empty", () => {
+		expect(applyTemplate(tpl, meeting({ durationMinutes: "30" }))).toBe("");
+	});
+
+	it("never treats meeting content as template markup", () => {
+		// Granola notes are substituted after conditionals are rendered, so a
+		// meeting that happens to discuss "{{#foo}}" keeps it verbatim.
+		const result = applyTemplate(
+			"{{granola_private_notes}}",
+			meeting({ privateNotes: "{{#foo}}hidden{{/foo}}" }),
+		);
+		expect(result).toBe("{{#foo}}hidden{{/foo}}");
+	});
+});
+
+describe("default template timing line", () => {
+	const synced = meeting({
+		enhancedNotes: "- a point",
+		startMinutes: 14 * 60,
+		endMinutes: 14 * 60 + 41,
+		durationMinutes: "41",
+	});
+
+	it("renders the timing line directly under the Summary heading", () => {
+		const body = applyTemplate(DEFAULT_TEMPLATE, synced);
+		expect(body).toContain("## Summary\n\n2:00 PM-2:41 PM (41m)\n\n- a point");
+	});
+
+	it("omits the line entirely when the length is unknown", () => {
+		const body = applyTemplate(DEFAULT_TEMPLATE, meeting({ enhancedNotes: "- a point" }));
+		expect(body).toContain("## Summary\n\n- a point");
+		expect(body).not.toContain("minutes");
+		expect(body).not.toContain("{{");
+	});
+});
+
+describe("clock times", () => {
+	it("formats start and end in the reader's locale", () => {
+		const result = applyTemplate(
+			"{{granola_start_time}}-{{granola_end_time}}",
+			meeting({ startMinutes: 14 * 60, endMinutes: 14 * 60 + 41 }),
+		);
+		expect(result).toBe("2:00 PM-2:41 PM");
+	});
+
+	it("rolls a meeting running past midnight into the next morning", () => {
+		const result = applyTemplate(
+			"{{granola_end_time}}",
+			meeting({ startMinutes: 23 * 60 + 50, endMinutes: 24 * 60 + 10 }),
+		);
+		expect(result).toBe("12:10 AM");
+	});
+
+	it("renders nothing when the time is unknown", () => {
+		expect(applyTemplate("{{granola_start_time}}", meeting({ startMinutes: null }))).toBe("");
+	});
+});
+
+describe("granola_updated", () => {
+	it("is no longer a silently empty variable", () => {
+		// Granola's API exposes no updated timestamp, so the placeholder now
+		// survives into the note where it is visible, rather than rendering
+		// as a blank that looks like the meeting simply had no value.
+		expect(applyTemplate("{{granola_updated}}", meeting())).toBe("{{granola_updated}}");
+	});
+});
+
+describe("formatDuration", () => {
+	it("omits a component that would read as zero", () => {
+		expect(formatDuration(74, "compact")).toBe("1h 14m");
+		expect(formatDuration(60, "compact")).toBe("1h");
+		expect(formatDuration(35, "compact")).toBe("35m");
+		expect(formatDuration(1, "compact")).toBe("1m");
+	});
+
+	it("spells the units out in the long style", () => {
+		expect(formatDuration(74, "long")).toBe("1 hour 14 minutes");
+		expect(formatDuration(60, "long")).toBe("1 hour");
+		expect(formatDuration(35, "long")).toBe("35 minutes");
+	});
+
+	it("reports the whole length in the minutes style", () => {
+		expect(formatDuration(74, "minutes")).toBe("74 minutes");
+		expect(formatDuration(60, "minutes")).toBe("60 minutes");
+	});
+
+	it("does not cap hours at a day", () => {
+		expect(formatDuration(1454, "compact")).toBe("24h 14m");
+	});
+
+	it("renders nothing when the length is unknown", () => {
+		expect(formatDuration(null, "compact")).toBe("");
+	});
+
+	it("names the units in the language Obsidian is set to", () => {
+		// Derived from Intl rather than written out, because the exact words
+		// come from whatever ICU data the runtime ships and differ between
+		// machines. What matters here is that the locale reaches Intl at all.
+		const unit = (value: number, name: "hour" | "minute", display: "narrow" | "long") =>
+			new Intl.NumberFormat("de", { style: "unit", unit: name, unitDisplay: display }).format(
+				value,
+			);
+		const previous = moment.locale();
+		try {
+			moment.locale("de");
+			expect(formatDuration(74, "compact")).toBe(
+				`${unit(1, "hour", "narrow")} ${unit(14, "minute", "narrow")}`,
+			);
+			expect(formatDuration(74, "long")).toBe(
+				`${unit(1, "hour", "long")} ${unit(14, "minute", "long")}`,
+			);
+		} finally {
+			moment.locale(previous);
+		}
+	});
+});
+
+describe("duration variables", () => {
+	it("writes granola_duration_formatted in the style the caller supplies", () => {
+		const m = meeting({ durationMinutes: "74" });
+		expect(applyTemplate("{{granola_duration_formatted}}", m, new Map(), "minutes")).toBe(
+			"74 minutes",
+		);
+		expect(applyTemplate("{{granola_duration_formatted}}", m)).toBe("1h 14m");
+	});
+
+	it("keeps granola_duration_min a plain number for arithmetic", () => {
+		expect(applyTemplate("{{granola_duration_min}}", meeting({ durationMinutes: "74" }))).toBe(
+			"74",
+		);
+	});
+
+	it("leaves both empty, hiding their blocks, when the length is unknown", () => {
+		const unknown = meeting({ durationMinutes: "" });
+		expect(
+			applyTemplate(
+				"{{#granola_duration_formatted}}took {{granola_duration_formatted}}{{/granola_duration_formatted}}",
+				unknown,
+			),
+		).toBe("");
+		expect(applyTemplate("{{granola_duration_min}}", unknown)).toBe("");
+	});
+});
+
+describe("the retired granola_duration name", () => {
+	it("renders nothing instead of spilling a placeholder into a note", () => {
+		const m = meeting({ durationMinutes: "74" });
+		expect(applyTemplate("{{granola_duration}}", m)).toBe("");
+		expect(applyTemplate("{{#granola_duration}}x{{/granola_duration}}", m)).toBe("");
 	});
 });

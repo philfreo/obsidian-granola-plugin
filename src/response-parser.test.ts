@@ -7,6 +7,7 @@ import {
 	formatTranscriptText,
 	parseGranolaDate,
 	buildMeetingData,
+	parseClockTime,
 	normalizeTaskItems,
 	decodeXmlEntities,
 	excludeSelf,
@@ -362,6 +363,7 @@ describe("buildMeetingData", () => {
 				id: "xyz",
 				title: "Planning",
 				date: "Mar 3, 2026 3:00 PM",
+				url: "",
 				participants: [],
 				privateNotes: "notes",
 				summary: "summary md",
@@ -371,7 +373,7 @@ describe("buildMeetingData", () => {
 		expect(data.id).toBe("xyz");
 		expect(data.title).toBe("Planning");
 		expect(data.date).toBe("2026-03-03");
-		expect(data.startTime).toBe("3:00 PM");
+		expect(data.startMinutes).toBe(900);
 		expect(data.url).toBe("https://notes.granola.ai/d/xyz");
 		expect(data.enhancedNotes).toBe("summary md");
 		expect(data.transcript).toBe("**Me:** hi");
@@ -379,9 +381,158 @@ describe("buildMeetingData", () => {
 
 	it("falls back to a default title when none is given", () => {
 		const data = buildMeetingData(
-			{ id: "id", title: "", date: "Mar 3, 2026 3:00 PM", participants: [], privateNotes: "", summary: "" },
+			{ id: "id", title: "", date: "Mar 3, 2026 3:00 PM", url: "", participants: [], privateNotes: "", summary: "" },
 			"",
 		);
 		expect(data.title).toBe("Untitled Meeting");
+	});
+});
+
+describe("parseClockTime", () => {
+	it("reads a 12-hour clock time as minutes since midnight", () => {
+		expect(parseClockTime("12:00 AM")).toBe(0);
+		expect(parseClockTime("9:05 AM")).toBe(545);
+		expect(parseClockTime("12:00 PM")).toBe(720);
+		expect(parseClockTime("3:00 PM")).toBe(900);
+		expect(parseClockTime("11:59 PM")).toBe(1439);
+	});
+
+	it("rejects times it cannot read", () => {
+		expect(parseClockTime("")).toBeNull();
+		expect(parseClockTime("15:00")).toBeNull();
+		expect(parseClockTime("13:00 PM")).toBeNull();
+		expect(parseClockTime("3:70 PM")).toBeNull();
+	});
+});
+
+describe("Granola's audio-source speaker labels", () => {
+
+	it("breaks on a system-audio label and names the person behind it", () => {
+		const raw = "Microphone: my bit\n\nSystem audio (Jane Doe): her bit\n\nSystem audio: someone else";
+		expect(formatTranscriptText(raw)).toBe(
+			"**Me:** my bit\n\n**Jane Doe:** her bit\n\n**Them:** someone else",
+		);
+	});
+
+	it("turns every label form into a speaker break", () => {
+		// "System audio" has a lowercase second word, so it used to slip past
+		// the pattern and sit in the note as literal text.
+		for (const label of ["Microphone", "System audio", "System audio (Jane Doe)", "Speaker A", "Jane Doe"]) {
+			const raw = `${label}: first\n\n${label}: second`;
+			const turns = formatTranscriptText(raw).split("\n\n");
+			expect(turns).toHaveLength(2);
+			expect(turns.every((turn) => turn.startsWith("**"))).toBe(true);
+		}
+	});
+
+	it("still splits on the double spaces older transcripts used", () => {
+		expect(formatTranscriptText("Microphone: mine.  System audio: theirs.")).toBe(
+			"**Me:** mine.  **Them:** theirs.".replace(/ {2}/g, "\n\n"),
+		);
+	});
+});
+
+describe("the note's link", () => {
+	const base = {
+		id: "xyz",
+		title: "Planning",
+		date: "Mar 3, 2026 3:00 PM GMT",
+		participants: [],
+		privateNotes: "",
+		summary: "s",
+	};
+
+	it("uses the link Granola returns", () => {
+		const data = buildMeetingData(
+			{ ...base, url: "https://notes.granola.ai/d/somewhere-else" },
+			"",
+		);
+		expect(data.url).toBe("https://notes.granola.ai/d/somewhere-else");
+	});
+
+	it("builds one when the response omits it", () => {
+		const data = buildMeetingData({ ...base, url: "" }, "");
+		expect(data.url).toBe("https://notes.granola.ai/d/xyz");
+	});
+
+	it("reads the url attribute off a meeting tag", () => {
+		const xml =
+			'<meeting id="abc" title="T" date="Mar 3, 2026 3:00 PM" url="https://notes.granola.ai/d/abc"></meeting>';
+		expect(parseMeetingsResponse(xml)[0].url).toBe("https://notes.granola.ai/d/abc");
+	});
+
+	it("reports no url when the attribute is absent", () => {
+		const xml = '<meeting id="abc" title="T" date="Mar 3, 2026 3:00 PM"></meeting>';
+		expect(parseMeetingsResponse(xml)[0].url).toBe("");
+	});
+});
+
+describe("buildMeetingData timing", () => {
+	const details = {
+		id: "xyz",
+		title: "Planning",
+		date: "Mar 3, 2026 3:00 PM GMT",
+		url: "",
+		participants: [],
+		privateNotes: "",
+		summary: "s",
+	};
+	const PM3 = 15 * 60;
+	const at = (iso: string) => Date.parse(iso);
+
+	it("has no length at all without an API key", () => {
+		const data = buildMeetingData(details, "Microphone: hello");
+		expect(data.startMinutes).toBe(PM3);
+		expect(data.endMinutes).toBeNull();
+		expect(data.durationMinutes).toBe("");
+	});
+
+	it("measures from the listed time, so a late start counts toward the length", () => {
+		const data = buildMeetingData(details, "", {
+			startMs: at("2026-03-03T15:06:00.000Z"),
+			endMs: at("2026-03-03T15:36:00.000Z"),
+		});
+		expect(data.startMinutes).toBe(PM3);
+		// Six minutes of waiting plus thirty of conversation.
+		expect(data.endMinutes).toBe(PM3 + 36);
+		expect(data.durationMinutes).toBe("36");
+	});
+
+	it("falls back to the first word when talking began before the listed time", () => {
+		const data = buildMeetingData(details, "", {
+			startMs: at("2026-03-03T14:57:00.000Z"),
+			endMs: at("2026-03-03T15:30:00.000Z"),
+		});
+		expect(data.startMinutes).toBe(PM3 - 3);
+		expect(data.durationMinutes).toBe("33");
+	});
+
+	it("ignores a sub-minute early start rather than shifting the clock back", () => {
+		// `date` carries no seconds, so an ad-hoc recording always begins a
+		// little off its own listed minute; that is not time anyone waited.
+		const data = buildMeetingData(details, "", {
+			startMs: at("2026-03-03T14:59:29.000Z"),
+			endMs: at("2026-03-03T15:30:00.000Z"),
+		});
+		expect(data.startMinutes).toBe(PM3);
+		expect(data.durationMinutes).toBe("30");
+	});
+
+	it("rounds the end to the nearest minute", () => {
+		const data = buildMeetingData(details, "", {
+			startMs: at("2026-03-03T15:00:00.000Z"),
+			endMs: at("2026-03-03T15:30:40.000Z"),
+		});
+		expect(data.endMinutes).toBe(PM3 + 31);
+	});
+
+	it("leaves every time empty when the date cannot be read", () => {
+		const data = buildMeetingData({ ...details, date: "not a date" }, "", {
+			startMs: at("2026-03-03T15:00:00.000Z"),
+			endMs: at("2026-03-03T15:30:00.000Z"),
+		});
+		expect(data.startMinutes).toBeNull();
+		expect(data.endMinutes).toBeNull();
+		expect(data.durationMinutes).toBe("");
 	});
 });

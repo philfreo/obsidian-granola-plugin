@@ -9,6 +9,8 @@ import {
 import { GranolaAuthProvider, type AuthStorage } from "./auth";
 import { GranolaMcpClient } from "./mcp-client";
 import { syncFolderFirst } from "./note-scope";
+import { fetchMeetingTranscript, spokenRange, formatSegments } from "./granola-api";
+import type { SpokenRange } from "./granola-api";
 import {
 	parseMeetingsResponse,
 	parseTranscriptResponse,
@@ -308,6 +310,16 @@ export default class GranolaSyncPlugin extends Plugin {
 		// Migrate old autoSyncOnStartup setting
 		if (data?.autoSyncOnStartup !== undefined && !data.syncFrequency) {
 			this.settings.syncFrequency = data.autoSyncOnStartup ? "startup" : "manual";
+		}
+
+		// "Sync transcripts" became "Include transcripts" when the fetch stopped
+		// being optional: the transcript is now always retrieved for its
+		// timestamp, and the setting only decides whether its text reaches the
+		// note. The user's existing choice carries over unchanged.
+		const legacy = (data as { syncTranscripts?: boolean } | null)?.syncTranscripts;
+		if (legacy !== undefined && data?.includeTranscripts === undefined) {
+			this.settings.includeTranscripts = legacy;
+			this.pluginData.includeTranscripts = legacy;
 		}
 
 		// Load accounts, migrating a legacy single-account connection if present.
@@ -611,22 +623,63 @@ export default class GranolaSyncPlugin extends Plugin {
 					continue;
 				}
 
-				// Optionally fetch transcript
+				// With an API key the transcript comes from the REST API,
+				// whose segments carry the timestamps a meeting's length is
+				// measured from. Without one the MCP is the only source, and
+				// it returns the transcript already flattened into a string
+				// with every timestamp dropped — hence no length at all.
+				//
+				// Either way the transcript is fetched whether or not its
+				// text ends up in the note. Meetings whose notes already
+				// exist were filtered out before this point, so a
+				// steady-state sync fetches nothing extra.
+				const apiKey = this.settings.granolaApiKey.trim();
 				let transcript = "";
-				if (this.settings.syncTranscripts) {
+				let spoken: SpokenRange | null = null;
+				if (apiKey) {
 					try {
-						const transcriptResponse = await mcp.getTranscript(details.id);
-						transcript = parseTranscriptResponse(transcriptResponse);
+						const segments = await fetchMeetingTranscript(
+							apiKey,
+							details.id,
+							Date.parse(details.date),
+						);
+						if (segments) {
+							transcript = formatSegments(segments);
+							spoken = spokenRange(segments);
+						} else {
+							console.warn(`Granola: no API note matches meeting ${details.id}`);
+						}
+					} catch (error) {
+						console.error(`Granola: API transcript failed for ${details.id}`, error);
+					}
+				}
+				// Falls through to the MCP when there is no key, and also when
+				// the key was rejected, so a bad key costs the meeting its
+				// length rather than its notes.
+				if (!transcript) {
+					try {
+						transcript = parseTranscriptResponse(await mcp.getTranscript(details.id));
 					} catch (error) {
 						console.error(`Granola: transcript fetch failed for ${details.id}`, error);
 					}
 				}
 
-				const meetingData = buildMeetingData(details, transcript);
+				const meetingData = buildMeetingData(details, transcript, spoken);
+				if (!this.settings.includeTranscripts) {
+					// Emptying it is what collapses the template's
+					// {{#granola_transcript}} block, leaving the timing
+					// derived from the same fetch intact.
+					meetingData.transcript = "";
+				}
 				if (this.settings.excludeSelfFromAttendees && account.email) {
 					meetingData.participants = excludeSelf(meetingData.participants, account.email);
 				}
-				const content = applyTemplate(ctx.template, meetingData, ctx.emailToNoteTitle);
+				const content = applyTemplate(
+					ctx.template,
+					meetingData,
+					ctx.emailToNoteTitle,
+					this.settings.durationStyle,
+				);
 				const existingFile = ctx.existingDocs.get(details.id);
 
 				if (existingFile) {

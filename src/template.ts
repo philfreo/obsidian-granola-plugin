@@ -40,6 +40,7 @@ export function applyTemplate(
 	template: string,
 	meeting: MeetingData,
 	emailToNoteTitle: Map<string, string> = new Map(),
+	durationStyle: DurationStyle = DEFAULT_DURATION_STYLE,
 ): string {
 	// Resolve attendee names, preferring matches from vault notes
 	const attendeeNames = meeting.participants
@@ -51,7 +52,6 @@ export function applyTemplate(
 		granola_title: meeting.title,
 		granola_date: meeting.date,
 		granola_created: meeting.created,
-		granola_updated: "",
 		granola_private_notes: meeting.privateNotes,
 		granola_enhanced_notes: meeting.enhancedNotes,
 		granola_transcript: meeting.transcript,
@@ -62,21 +62,110 @@ export function applyTemplate(
 			.map((name) => `  - "[[${name}]]"`)
 			.join("\n"),
 		granola_url: meeting.url,
+		granola_duration_min: meeting.durationMinutes,
+		// Retired in favour of the two names above, and deliberately still
+		// here: a template that reaches for it renders nothing rather than
+		// spilling a raw placeholder into someone's note. Not advertised.
 		granola_duration: "",
-		granola_start_time: meeting.startTime,
-		granola_end_time: "",
+		granola_duration_formatted: formatDuration(
+			meeting.durationMinutes === "" ? null : Number(meeting.durationMinutes),
+			durationStyle,
+		),
+		granola_start_time: formatClockTime(meeting.startMinutes),
+		granola_end_time: formatClockTime(meeting.endMinutes),
 	};
 
-	// Process conditional blocks: {{#var}}content{{/var}} - only renders if var is non-empty
-	let result = template.replace(/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g, (_, key: string, content: string) => {
-		const value = variables[key];
-		return value?.trim() ? content : "";
-	});
+	const result = renderConditionals(template, variables);
 
 	// Replace simple variables: {{var}}
-	result = result.replace(/\{\{(\w+)\}\}/g, (_, key: string) => variables[key] ?? `{{${key}}}`);
+	return result.replace(/\{\{(\w+)\}\}/g, (_, key: string) => variables[key] ?? `{{${key}}}`);
+}
 
-	return result;
+/** How `{{granola_duration_formatted}}` is written. */
+export type DurationStyle = "compact" | "long" | "minutes";
+
+export const DEFAULT_DURATION_STYLE: DurationStyle = "compact";
+
+/**
+ * Write a duration in minutes as human-readable text.
+ *
+ * `Intl` formats one number against one unit and knows the unit's name in
+ * every locale, so "1h 14m" comes back as "1 Std. 14 Min." for a reader whose
+ * Obsidian is in German without the plugin holding any translations. The
+ * locale comes from moment, which Obsidian sets from the app's language, so
+ * durations follow the same setting the clock times do rather than the
+ * operating system's.
+ *
+ * Choosing which units to pass is ours rather than `Intl`'s, and it is what
+ * keeps a zero component out of the text: an hour exactly is "1h" and not
+ * "1h 0m", while anything under an hour is "35m" and not "0h 35m". Hours are
+ * never capped at 24, so an overnight recording reads "24h 14m".
+ */
+export function formatDuration(totalMinutes: number | null, style: DurationStyle): string {
+	if (totalMinutes === null || !Number.isFinite(totalMinutes)) return "";
+	const locale = moment.locale();
+	const unit = (value: number, name: "hour" | "minute") => {
+		try {
+			return new Intl.NumberFormat(locale, {
+				style: "unit",
+				unit: name,
+				unitDisplay: style === "compact" ? "narrow" : "long",
+			}).format(value);
+		} catch {
+			// Very old runtimes lack the unit style; fall back to English.
+			const suffix = style === "compact" ? name.charAt(0) : ` ${name}${value === 1 ? "" : "s"}`;
+			return `${value}${suffix}`;
+		}
+	};
+
+	if (style === "minutes") return unit(totalMinutes, "minute");
+
+	const hours = Math.floor(totalMinutes / 60);
+	const minutes = totalMinutes % 60;
+	const parts: string[] = [];
+	if (hours) parts.push(unit(hours, "hour"));
+	if (minutes || !hours) parts.push(unit(minutes, "minute"));
+	return parts.join(" ");
+}
+
+/**
+ * Render minutes since midnight as a clock time in the reader's own locale,
+ * so a 24-hour locale gets "14:06" where an English one gets "2:06 PM".
+ *
+ * Obsidian bundles moment and localizes it to the app's language, which makes
+ * `LT` — its locale-aware short time format — follow the language the user
+ * actually reads Obsidian in rather than whatever the operating system is set
+ * to. Building the time by adding to the start of a day also means a meeting
+ * running past midnight formats as the following morning instead of
+ * overflowing past 24.
+ */
+function formatClockTime(totalMinutes: number | null): string {
+	if (totalMinutes === null) return "";
+	// `utc` keeps this synthetic time free of any local timezone or DST shift;
+	// only the clock face matters, and the locale still governs formatting.
+	return moment.utc().startOf("day").add(totalMinutes, "minutes").format("LT");
+}
+
+/**
+ * Render `{{#var}}content{{/var}}` blocks, keeping the content only when the
+ * variable is non-empty.
+ *
+ * Recurses into the content it keeps, so a block nested inside another one is
+ * rendered too — a flat pass replaces the outer block with text it never
+ * rescans, which used to leave the inner `{{#var}}` and `{{/var}}` markers
+ * sitting in the finished note as literal characters.
+ *
+ * Recursion walks the template only, and runs before any variable is
+ * substituted. That ordering is the safety property: a meeting whose notes
+ * happen to contain `{{#something}}` gets it written out verbatim, instead of
+ * having Granola's own text interpreted as template markup.
+ */
+function renderConditionals(template: string, variables: Record<string, string>): string {
+	return template.replace(
+		/\{\{#(\w+)\}\}([\s\S]*?)\{\{\/\1\}\}/g,
+		(_, key: string, content: string) =>
+			variables[key]?.trim() ? renderConditionals(content, variables) : "",
+	);
 }
 
 /** Characters no filename may contain on Windows or macOS. */

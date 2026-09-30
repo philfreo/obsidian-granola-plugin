@@ -1,3 +1,5 @@
+import type { SpokenRange } from "./granola-api";
+
 export interface ParsedParticipant {
 	name: string;
 	email: string;
@@ -9,6 +11,8 @@ export interface ParsedMeeting {
 	id: string;
 	title: string;
 	date: string; // raw from API, e.g. "Mar 3, 2026 3:00 PM"
+	/** Granola's own link to the note; "" when the response omits it. */
+	url: string;
 	participants: ParsedParticipant[];
 }
 
@@ -21,7 +25,11 @@ export interface MeetingData {
 	id: string;
 	title: string;
 	date: string; // ISO date "2026-03-03"
-	startTime: string; // e.g. "3:00 PM"
+	/** Minutes since midnight, in the meeting's own timezone; null when unknown. */
+	startMinutes: number | null;
+	/** Minutes since midnight; may exceed 1440 when a meeting runs past midnight. */
+	endMinutes: number | null;
+	durationMinutes: string; // whole minutes, e.g. "41"; "" without an API key
 	created: string; // ISO datetime
 	url: string;
 	privateNotes: string;
@@ -105,6 +113,7 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		if (!id) continue;
 		const title = attr(openTag, "title");
 		const date = attr(openTag, "date");
+		const url = attr(openTag, "url");
 
 		const participantsMatch = body.match(/<known_participants>\s*([\s\S]*?)\s*<\/known_participants>/);
 		const participants = participantsMatch
@@ -117,7 +126,7 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		const summaryMatch = body.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/);
 		const summary = summaryMatch ? normalizeTaskItems(decodeXmlEntities(summaryMatch[1].trim())) : "";
 
-		meetings.push({ id, title, date, participants, privateNotes, summary });
+		meetings.push({ id, title, date, url, participants, privateNotes, summary });
 	}
 
 	return meetings;
@@ -222,12 +231,6 @@ export function excludeSelf(
 	return participants.filter((p) => p.email.trim().toLowerCase() !== self);
 }
 
-/**
- * Parse transcript response (JSON with id, title, transcript fields).
- * The response may prefix the JSON with a plain-text preamble
- * ("The content below is meeting notes/transcripts..."), so if the full
- * text isn't valid JSON we retry on the outermost {...} block.
- */
 export function parseTranscriptResponse(text: string): string {
 	const candidates = [text];
 	const start = text.indexOf("{");
@@ -246,17 +249,28 @@ export function parseTranscriptResponse(text: string): string {
 	return text.trim();
 }
 
-// Speaker labels are capitalized words followed by a colon: "Microphone:",
-// "Speaker:", a participant's name, or "Me:"/"Them:" in older transcripts.
-const SPEAKER_LABEL = "(\\p{Lu}[\\p{L}'’.-]*(?: \\p{Lu}[\\p{L}'’.-]*){0,3}):";
+// Speaker labels are capitalized words followed by a colon: a participant's
+// name, "Speaker A:", or "Me:"/"Them:" in older transcripts.
+//
+// "System audio" is spelled out rather than left to the capitalized-words
+// pattern because its second word is lowercase. Granola labels utterances by
+// audio source, and a label the pattern misses is left sitting in the note
+// as literal text instead of becoming a speaker break.
+const SPEAKER_NAME = "(?:System audio|Microphone|\\p{Lu}[\\p{L}'’.-]*(?: \\p{Lu}[\\p{L}'’.-]*){0,3})";
+// An audio source can name who was speaking through it: "System audio (Jane Doe):".
+const SPEAKER_LABEL = `(${SPEAKER_NAME}(?: \\([^)]{1,80}\\))?):`;
 
 /**
- * "Microphone" is the note-taker's own audio and "Speaker" is everyone
- * else, which Granola's older transcripts labeled "Me" and "Them".
+ * "Microphone" is the note-taker's own audio and "Speaker" is everyone else,
+ * which Granola's older transcripts labeled "Me" and "Them". Where an audio
+ * source names who was speaking through it, that person is the useful label,
+ * so "System audio (Jane Doe)" reads as "Jane Doe".
  */
 function friendlySpeakerName(name: string): string {
+	const named = name.match(/^(?:System audio|Microphone) \((.+)\)$/);
+	if (named) return named[1];
 	if (name === "Microphone") return "Me";
-	if (name === "Speaker") return "Them";
+	if (name === "Speaker" || name === "System audio") return "Them";
 	return name;
 }
 
@@ -277,6 +291,17 @@ export function formatTranscriptText(raw: string): string {
 			new RegExp(`^${SPEAKER_LABEL}`, "u"),
 			(_, name: string) => `**${friendlySpeakerName(name)}:**`,
 		);
+}
+
+/** Parse "3:00 PM" into minutes since midnight; null when unparseable. */
+export function parseClockTime(time12: string): number | null {
+	const match = time12.trim().match(/^(\d{1,2}):(\d{2})\s*([AP])M$/i);
+	if (!match) return null;
+	const hour12 = parseInt(match[1], 10);
+	const minute = parseInt(match[2], 10);
+	if (hour12 < 1 || hour12 > 12 || minute > 59) return null;
+	const hour = (hour12 % 12) + (match[3].toUpperCase() === "P" ? 12 : 0);
+	return hour * 60 + minute;
 }
 
 /**
@@ -302,20 +327,65 @@ export function parseGranolaDate(dateStr: string): { isoDate: string; time: stri
 
 /**
  * Build a MeetingData object from parsed API responses.
+ *
+ * `spoken` is the span the transcript actually covers, and it only arrives
+ * when an API key is configured, because the MCP exposes no end time at all.
+ * Without it a meeting has a start and nothing else: end and duration stay
+ * empty, which is what keeps the timing line out of the note rather than
+ * filling it with a guess.
+ *
+ * A meeting is measured from the time Granola lists for it rather than from
+ * when talking began, so the length covers waiting as well as conversation.
+ * That listed time is the calendar slot for invite-linked notes and the
+ * capture moment for ad-hoc ones, which have no waiting to account for.
  */
 export function buildMeetingData(
 	details: ParsedMeetingDetails,
 	transcript: string,
+	spoken: SpokenRange | null = null,
 ): MeetingData {
 	const { isoDate, time, isoDateTime } = parseGranolaDate(details.date);
+	const listedMinutes = parseClockTime(time);
+	const listedInstant = Date.parse(details.date);
+	const canTime = listedMinutes !== null && spoken !== null && !isNaN(listedInstant);
+
+	// The segment times are instants, while `date` is wall-clock time in the
+	// meeting's own timezone. Shifting the listed clock by the gap between
+	// them lands both ends in that same zone, so a meeting reads at the hour
+	// it happened rather than the hour the syncing device is in.
+	//
+	// The start truncates because `date` carries no seconds, so an ad-hoc
+	// recording whose first word lands part-way into its own listed minute
+	// would otherwise gain a minute of waiting that never happened. The end
+	// rounds, since there is no such artifact and nearest-minute is the
+	// honest rendering of an exact instant.
+	const spokenStart = canTime
+		? listedMinutes + Math.trunc((spoken.startMs - listedInstant) / 60000)
+		: null;
+	const spokenEnd = canTime
+		? listedMinutes + Math.round((spoken.endMs - listedInstant) / 60000)
+		: null;
+
+	// Recording sometimes begins before the listed time. Taking the earlier of
+	// the two keeps the reported length from ever undercutting the
+	// conversation it is built from.
+	const startMinutes =
+		spokenStart === null ? listedMinutes : Math.min(listedMinutes!, spokenStart);
+	const endMinutes = spokenEnd;
 
 	return {
 		id: details.id,
 		title: details.title || "Untitled Meeting",
 		date: isoDate,
-		startTime: time,
+		startMinutes,
+		endMinutes,
+		durationMinutes:
+			endMinutes === null || startMinutes === null ? "" : String(endMinutes - startMinutes),
 		created: isoDateTime,
-		url: `https://notes.granola.ai/d/${details.id}`,
+		// Granola now returns the note's link itself. Falling back to building
+		// one keeps older responses, and any meeting whose tag omits the
+		// attribute, from landing in a note with an empty link.
+		url: details.url || `https://notes.granola.ai/d/${details.id}`,
 		privateNotes: details.privateNotes,
 		enhancedNotes: details.summary,
 		transcript: formatTranscriptText(transcript),
