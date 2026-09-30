@@ -215,7 +215,7 @@ Releases are automated by `.github/workflows/release.yml`: pushing a tag of the 
 
 To cut a release:
 
-1. Bump the version: `npm version patch` (or `minor`/`major`). This runs `version-bump.mjs`, which updates `manifest.json` and `versions.json`, and stages them in the version commit.
+1. Bump the version: `npm version patch` (or `minor`/`major`). This first runs `preversion` (lint, typecheck, tests, build) and aborts without committing or tagging if anything fails, so a release cannot be cut from a broken tree. It then runs `version-bump.mjs`, which updates `manifest.json` and `versions.json`, and stages them in the version commit.
 2. Push the commit and the tag: `git push && git push --tags`.
 3. The Release workflow runs on the tag and publishes the GitHub release.
 
