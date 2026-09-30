@@ -12,6 +12,7 @@
 		"test:watch": "vitest",
 		"package": "npm run build && mkdir -p release/granola-meetings-simple-sync && cp main.js manifest.json versions.json release/granola-meetings-simple-sync/",
 		"deploy-local": "source .env && npm run package && cp \"$OBSIDIAN_PLUGINS/granola-meetings-simple-sync/data.json\" release/granola-meetings-simple-sync/data.json 2>/dev/null; rm -rf \"$OBSIDIAN_PLUGINS/granola-meetings-simple-sync\" && mv release/granola-meetings-simple-sync \"$OBSIDIAN_PLUGINS/\"",
+		"preversion": "npm run lint && npm run typecheck && npm test && npm run build",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],
