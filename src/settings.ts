@@ -83,6 +83,7 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	folderPath: "Meetings",
 	filenamePattern: "{date} {title}",
 	templatePath: "Templates/Granola.md",
+	skipExistingNotes: false,
 	updateNoteContent: true,
 	rerouteExistingNotes: false,
 
@@ -520,12 +521,26 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 				},
 				{
 					name: "Manual note actions",
-					desc: "Re-render content or re-route existing meeting notes in your vault from cached data.",
+					desc: "Refresh summaries from Granola, re-render content, or re-route existing meeting notes in your vault.",
 					render: (setting) => {
 						setting.addButton((button) =>
 							button
-								.setButtonText("Re-render notes")
+								.setButtonText("Refresh summaries")
 								.setCta()
+								.onClick(async () => {
+									button.setDisabled(true);
+									button.setButtonText("Refreshing...");
+									try {
+										await this.plugin.refreshMeetingSummaries(true);
+									} finally {
+										button.setDisabled(false);
+										button.setButtonText("Refresh summaries");
+									}
+								}),
+						);
+						setting.addButton((button) =>
+							button
+								.setButtonText("Re-render notes")
 								.onClick(async () => {
 									button.setDisabled(true);
 									button.setButtonText("Re-rendering...");

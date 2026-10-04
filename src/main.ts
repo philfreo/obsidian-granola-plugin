@@ -172,6 +172,12 @@ export default class GranolaSyncPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "refresh-meeting-summaries",
+			name: "Refresh meeting summaries from Granola",
+			callback: () => void this.refreshMeetingSummaries(true),
+		});
+
+		this.addCommand({
 			id: "rerender-notes-from-cache",
 			name: "Re-render notes from cache",
 			callback: () => void this.reRenderAllNotesFromCache(),
@@ -521,7 +527,11 @@ export default class GranolaSyncPlugin extends Plugin {
 		await this.saveData(this.pluginData);
 	}
 
-	async syncMeetings(manual = false): Promise<void> {
+	async refreshMeetingSummaries(manual = true): Promise<void> {
+		await this.syncMeetings(manual, true);
+	}
+
+	async syncMeetings(manual = false, forceRefreshSummaries = false): Promise<void> {
 		if (this.isSyncing) return;
 		this.isSyncing = true;
 		this.syncAbortController = new AbortController();
@@ -529,7 +539,7 @@ export default class GranolaSyncPlugin extends Plugin {
 		this.ensuredFolders.clear();
 
 		try {
-			await this.doSync(manual, this.syncAbortController.signal);
+			await this.doSync(manual, this.syncAbortController.signal, forceRefreshSummaries);
 		} catch (error) {
 			if (this.isAbortError(error)) {
 				if (manual) new Notice("Granola sync stopped");
@@ -548,7 +558,11 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 	}
 
-	private async doSync(manual: boolean, signal: AbortSignal): Promise<void> {
+	private async doSync(
+		manual: boolean,
+		signal: AbortSignal,
+		forceRefreshSummaries = false,
+	): Promise<void> {
 		if (signal.aborted) throw new DOMException("The operation was aborted", "AbortError");
 
 		const connectedAccounts = this.accounts.filter((a) => a.oauthTokens !== undefined);
@@ -623,6 +637,7 @@ export default class GranolaSyncPlugin extends Plugin {
 			existingTranscripts,
 			emailToNoteTitle,
 			signal,
+			forceRefreshSummaries,
 		};
 
 		let created = 0;
@@ -658,7 +673,9 @@ export default class GranolaSyncPlugin extends Plugin {
 			const accountSuffix =
 				connectedAccounts.length > 1 ? ` across ${connectedAccounts.length} accounts` : "";
 			let message: string;
-			if (!this.settings.updateNoteContent && !this.settings.rerouteExistingNotes) {
+			if (forceRefreshSummaries) {
+				message = `Refreshed summaries: ${updated} note${updated !== 1 ? "s" : ""} updated, ${created} new${accountSuffix}`;
+			} else if (!this.settings.updateNoteContent && !this.settings.rerouteExistingNotes) {
 				message = `Synced ${created} new meeting${created !== 1 ? "s" : ""} (${skipped} skipped)${accountSuffix}`;
 			} else {
 				message = `Synced ${created} new, ${updated} updated meeting${created + updated !== 1 ? "s" : ""}${accountSuffix}`;
@@ -1296,14 +1313,18 @@ export default class GranolaSyncPlugin extends Plugin {
 		for (const m of meetingsToSyncNotes) neededIdsSet.add(m.id);
 		for (const m of meetingsToSyncTranscripts) neededIdsSet.add(m.id);
 
-		// Check which meeting details we already have in local cache
+		// Determine whether to query Granola for meetings that are already cached.
+		// If skipExistingNotes is false, or if forceRefreshSummaries is requested, re-query Granola for updates.
+		const shouldRecheckGranola =
+			!this.settings.skipExistingNotes || Boolean(ctx.forceRefreshSummaries);
+
 		const allDetails: ParsedMeetingDetails[] = [];
 		const detailsMap = new Map<string, ParsedMeetingDetails>();
 		const idsToFetch: string[] = [];
 
 		for (const id of neededIdsSet) {
 			const cached = await this.cacheStore.getMeeting(id);
-			if (cached) {
+			if (cached && !shouldRecheckGranola) {
 				const folders = meetingFoldersMap.get(id) ?? cached.folders ?? (cached.folder ? [cached.folder] : []);
 				const primaryFolder = folders[0] ?? cached.folder;
 
@@ -1369,6 +1390,31 @@ export default class GranolaSyncPlugin extends Plugin {
 			}
 		}
 
+		// Fall back to cached record if getMeetings failed or omitted an ID
+		for (const id of idsToFetch) {
+			if (!detailsMap.has(id)) {
+				const cached = await this.cacheStore.getMeeting(id);
+				if (cached) {
+					const folders = meetingFoldersMap.get(id) ?? cached.folders ?? (cached.folder ? [cached.folder] : []);
+					const primaryFolder = folders[0] ?? cached.folder;
+					const parsed: ParsedMeetingDetails = {
+						id: cached.id,
+						title: cached.title,
+						date: cached.date,
+						startTime: cached.startTime,
+						created: cached.created,
+						participants: cached.participants,
+						folder: primaryFolder,
+						folders,
+						privateNotes: cached.privateNotes,
+						summary: cached.enhancedNotes,
+					};
+					detailsMap.set(id, parsed);
+					allDetails.push(parsed);
+				}
+			}
+		}
+
 		let created = 0;
 		let updated = 0;
 
@@ -1430,8 +1476,11 @@ export default class GranolaSyncPlugin extends Plugin {
 						if (moved) wasModified = true;
 					}
 					if (this.settings.updateNoteContent) {
-						await this.app.vault.modify(existingFile, content);
-						wasModified = true;
+						const existingContent = await this.app.vault.read(existingFile);
+						if (existingContent !== content) {
+							await this.app.vault.modify(existingFile, content);
+							wasModified = true;
+						}
 					}
 					if (wasModified) {
 						updated++;
@@ -1557,8 +1606,11 @@ export default class GranolaSyncPlugin extends Plugin {
 							if (moved) wasModified = true;
 						}
 						if (this.settings.updateTranscriptContent) {
-							await this.app.vault.modify(existingTranscriptFile, transcriptContent);
-							wasModified = true;
+							const existingContent = await this.app.vault.read(existingTranscriptFile);
+							if (existingContent !== transcriptContent) {
+								await this.app.vault.modify(existingTranscriptFile, transcriptContent);
+								wasModified = true;
+							}
 						}
 						if (wasModified) {
 							transcriptsCreated++;
@@ -1679,6 +1731,7 @@ interface SyncContext {
 	existingTranscripts: Map<string, TFile>;
 	emailToNoteTitle: Map<string, string>;
 	signal: AbortSignal;
+	forceRefreshSummaries?: boolean;
 }
 
 interface SyncResult {

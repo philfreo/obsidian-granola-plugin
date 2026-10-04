@@ -6,6 +6,7 @@ import type GranolaSyncPlugin from "./main";
 
 describe("DEFAULT_SETTINGS", () => {
 	it("has default values for note and transcript refresh and re-route settings", () => {
+		expect(DEFAULT_SETTINGS.skipExistingNotes).toBe(false);
 		expect(DEFAULT_SETTINGS.updateNoteContent).toBe(true);
 		expect(DEFAULT_SETTINGS.rerouteExistingNotes).toBe(false);
 		expect(DEFAULT_SETTINGS.updateTranscriptContent).toBe(true);
@@ -21,6 +22,7 @@ describe("migrateSettings", () => {
 			skipExistingNotes: true,
 		};
 		const migrated = migrateSettings(raw);
+		expect(migrated.skipExistingNotes).toBe(true);
 		expect(migrated.updateNoteContent).toBe(false);
 		expect(migrated.rerouteExistingNotes).toBe(false);
 		expect(migrated.updateTranscriptContent).toBe(false);
@@ -32,6 +34,7 @@ describe("migrateSettings", () => {
 			skipExistingNotes: false,
 		};
 		const migrated = migrateSettings(raw);
+		expect(migrated.skipExistingNotes).toBe(false);
 		expect(migrated.updateNoteContent).toBe(true);
 		expect(migrated.rerouteExistingNotes).toBe(false);
 		expect(migrated.updateTranscriptContent).toBe(true);
@@ -53,8 +56,19 @@ describe("migrateSettings", () => {
 		expect(migrated.rerouteExistingTranscripts).toBe(true);
 	});
 
+	it("allows skipExistingNotes and updateNoteContent to be configured independently", () => {
+		const config1 = migrateSettings({ skipExistingNotes: true, updateNoteContent: true });
+		expect(config1.skipExistingNotes).toBe(true);
+		expect(config1.updateNoteContent).toBe(true);
+
+		const config2 = migrateSettings({ skipExistingNotes: false, updateNoteContent: false });
+		expect(config2.skipExistingNotes).toBe(false);
+		expect(config2.updateNoteContent).toBe(false);
+	});
+
 	it("falls back to default settings when no legacy or modern keys are provided", () => {
 		const migrated = migrateSettings({});
+		expect(migrated.skipExistingNotes).toBe(false);
 		expect(migrated.updateNoteContent).toBe(true);
 		expect(migrated.rerouteExistingNotes).toBe(false);
 		expect(migrated.updateTranscriptContent).toBe(true);
