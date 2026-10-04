@@ -62,7 +62,9 @@ To sync more than one Granola account, click **Add Granola account** in settings
 | Time range | Last 30 days | How far back to look for meetings. Options: This week, Last week, Last 30 days, Last 90 days, Last 180 days, Last 1 year, All time. (Note: Granola Free plans restrict history to 30 days) |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
 | Only my meetings | On | Sync only meetings you recorded or were listed as a participant in, including notes shared with you. Turn off to also sync every workspace-visible meeting |
-| Sync transcripts | Off | Download full transcripts as standalone documents. Transcripts are fetched in Phase 2 with a 65s pacing delay between calls to comply with Granola rate limits |
+| Granola API key | empty | Optional `grn_…` key enabling meeting length and end time. Create it in the Granola desktop app under Settings > Connectors > API keys; needs a Business or Enterprise plan. Stored unencrypted in your vault |
+| Show ribbon icon | On | Show a sync button in the left sidebar |
+| Refresh summaries | — | Button to query Granola for updated summaries and refresh the cache/notes without touching transcripts |
 | Re-render notes from cache | — | Button to instantly regenerate all vault notes from local disk cache using current templates and folder patterns without contacting Granola |
 | Clear local cache | — | Button to purge the local raw JSON cache |
 
@@ -70,14 +72,28 @@ To sync more than one Granola account, click **Add Granola account** in settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Folder path | `Meetings` | Where to save meeting notes. Supports `{granolaFolder}` / `{folder}`, `{meeting_date}` / `{date}`, `{meeting_name}` / `{title}`, `{id}` |
+| Folder path | `Meetings` | Where to save meeting notes. Supports `{granolaFolder}` / `{folder}`, `{meeting_date}` / `{date}`, `{date:YYYY/MM}`, `{meeting_name}` / `{title}`, `{id}` |
 | Filename pattern | `{date} {title}` | Pattern for meeting note filenames. Supports `{date}`, `{date:YYYY-MM-DD}`, `{title}`, `{id}`, `{granolaFolder}` |
 | Template path | `Templates/Granola.md` | Path to your meeting note template file |
+| Duration format | Compact | How `{{granola_duration_formatted}}` is written: Compact (1h 14m), Long (1 hour 14 minutes), or Minutes only (74 minutes) |
+| Update note content on sync | On | Re-renders existing vault notes with fresh content from Granola. Disable to preserve manual edits |
+| Re-route notes on sync | Off | Move/rename existing notes if the folder or filename pattern changes |
+
+### Transcript Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Sync transcripts | Off | Download full transcripts as standalone documents. Transcripts are fetched in Phase 2 with a 65s pacing delay between calls to comply with Granola rate limits |
 | Transcript folder | `{meeting_folder}` | Where to save transcript documents. Defaults to the same folder as the meeting note. Supports `{meeting_folder}`, `{meeting_filename}`, `{granolaFolder}`, `{date}`, `{title}`, `{id}` |
 | Transcript filename pattern | `{filename} (Transcript)` | Pattern for transcript filenames. Supports `{meeting_filename}` / `{filename}`, `{meeting_folder}`, `{date}`, `{title}`, `{id}`, `{granolaFolder}` |
 | Transcript template path | `Templates/Granola Transcript.md` | Path to your transcript document template file |
-| Show ribbon icon | On | Show a sync button in the left sidebar |
-| Skip existing notes | On | Don't overwrite notes you've edited. Existing notes are matched by `granola_id` anywhere in your vault, not just the sync folder, so notes you've moved aren't duplicated |
+| Update transcript content | On | Re-renders existing transcripts on sync |
+| Re-route transcripts | Off | Move/rename existing transcripts if pattern changes |
+
+### Attendees Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | Exclude yourself from attendees | On | Leave your own Granola account out of the attendee list |
 | Match attendees by email | On | Link attendees to notes with matching email in frontmatter |
 
@@ -115,7 +131,39 @@ The plugin operates on a robust two-stage pipeline:
 - `{{granola_title}}` - Meeting title
 - `{{granola_date}}` - Date (YYYY-MM-DD)
 - `{{granola_url}}` - Link to meeting on Granola web
+### Timing
 - `{{granola_start_time}}` - Start time (e.g., "3:00 PM")
+- `{{granola_end_time}}` - End time (e.g., "3:35 PM")
+- `{{granola_duration_formatted}}` - Length written out (e.g., "1h 14m"), in the style chosen by the "Duration format" setting
+- `{{granola_duration_min}}` - The same length as a plain number of minutes (e.g., "74"), for arithmetic
+
+The MCP API Granola gives the plugin reports no end time and no duration, so
+**these are blank unless you add a Granola API key** in settings. With a key
+the plugin reads the transcript from Granola's REST API instead, where every
+utterance carries its own start and end timestamp, and the length is measured
+rather than guessed. The key needs a Business or Enterprise plan.
+
+Both times are rendered in your own locale, following the language Obsidian
+is set to, so a 24-hour locale gets "14:06" where an English one gets
+"2:06 PM".
+
+#### Duration format
+
+`{{granola_duration_formatted}}` is written in one of three styles, chosen
+in settings. Unit names follow the language Obsidian is set to, so a German
+reader gets "1 Std. 14 Min." without configuring anything.
+
+| Setting | 35 min | 60 min | 74 min |
+|---------|--------|--------|--------|
+| Compact (default) | 35m | 1h | 1h 14m |
+| Long | 35 minutes | 1 hour | 1 hour 14 minutes |
+| Minutes only | 35 minutes | 60 minutes | 74 minutes |
+
+A component is left out when it would read as zero, so an hour-long meeting
+is "1h" rather than "1h 0m". Hours are not capped at a day.
+
+For any wording the three styles don't cover, build your own from
+`{{granola_duration_min}}`, which is a plain number of minutes.
 
 #### Folder & Collection Variables
 - `{{granola_folder}}` (aliases: `{{granolaFolder}}`, `{{folder}}`) - Primary folder name
@@ -175,7 +223,9 @@ tags:
 {{/granola_private_notes}}
 {{#granola_enhanced_notes}}## Summary
 
-{{granola_enhanced_notes}}
+{{#granola_duration_formatted}}{{granola_start_time}}-{{granola_end_time}} ({{granola_duration_formatted}})
+
+{{/granola_duration_formatted}}{{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
 ```
 
@@ -239,7 +289,7 @@ Releases are automated by `.github/workflows/release.yml`: pushing a tag of the 
 
 To cut a release:
 
-1. Bump the version: `npm version patch` (or `minor`/`major`). This runs `version-bump.mjs`, which updates `manifest.json` and `versions.json`, and stages them in the version commit.
+1. Bump the version: `npm version patch` (or `minor`/`major`). This first runs `preversion` (lint, typecheck, tests, build) and aborts without committing or tagging if anything fails, so a release cannot be cut from a broken tree. It then runs `version-bump.mjs`, which updates `manifest.json` and `versions.json`, and stages them in the version commit.
 2. Push the commit and the tag: `git push && git push --tags`.
 3. The Release workflow runs on the tag and publishes the GitHub release.
 

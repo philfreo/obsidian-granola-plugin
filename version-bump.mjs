@@ -8,10 +8,11 @@ const { minAppVersion } = manifest;
 manifest.version = targetVersion;
 writeFileSync("manifest.json", JSON.stringify(manifest, null, "\t"));
 
-// update versions.json with target version and minAppVersion from manifest.json
-// but only if the target version is not already in versions.json
+// Record this version's minAppVersion so Obsidian can offer an older release
+// to an app too old for the current one. Every released version needs an
+// entry: the guard that used to sit here skipped a version whenever its
+// minAppVersion already appeared against some earlier one, which silently
+// left most releases out of the file.
 const versions = JSON.parse(readFileSync("versions.json", "utf8"));
-if (!Object.values(versions).includes(minAppVersion)) {
-	versions[targetVersion] = minAppVersion;
-	writeFileSync("versions.json", JSON.stringify(versions, null, "\t"));
-}
+versions[targetVersion] = minAppVersion;
+writeFileSync("versions.json", JSON.stringify(versions, null, "\t"));

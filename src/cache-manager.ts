@@ -6,6 +6,9 @@ export interface CachedMeetingRecord {
 	title: string;
 	date: string; // ISO date "2026-03-03"
 	startTime: string; // e.g. "3:00 PM"
+	startMinutes?: number | null;
+	endMinutes?: number | null;
+	durationMinutes?: string;
 	created: string; // ISO datetime
 	url: string;
 	folder?: string;

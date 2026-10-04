@@ -1,15 +1,51 @@
 /**
  * Node.js-based fetch implementation that bypasses browser CORS restrictions.
  * Obsidian/Electron's built-in fetch enforces CORS, but Node's https module does not.
+ *
+ * Node's https module only trusts its own bundled Mozilla CA list, not the OS
+ * trust store. On networks with TLS-inspecting proxies (common on corporate
+ * machines), this causes "self signed certificate in certificate chain"
+ * errors even though the browser/OS trusts the connection fine. Where
+ * available (tls.getCACertificates, Node 22.9+), we pass Node's bundled CAs
+ * plus the OS trust store as extra CAs for every HTTPS request. On older
+ * Node/Electron runtimes, or if reading the OS store fails, we fall back to
+ * Node's default bundled-only behavior rather than risk trusting nothing.
  */
 import { request as httpsRequest } from "node:https";
 import { request as httpRequest } from "node:http";
 import type { IncomingMessage } from "node:http";
+import tls from "node:tls";
 
 const MAX_REDIRECTS = 5;
 export const DEFAULT_MAX_RETRIES = 3;
 export const DEFAULT_BASE_RETRY_DELAY_MS = 1500;
 export const DEFAULT_MAX_RETRY_DELAY_MS = 70000;
+
+// null = not yet computed, undefined = unavailable (use Node's defaults).
+let cachedCAs: string[] | undefined | null = null;
+
+/** Node's bundled CAs plus the OS trust store, when Node exposes them. Cached after first call. */
+export function getCACertificates(): string[] | undefined {
+	if (cachedCAs !== null) return cachedCAs;
+	if (typeof tls.getCACertificates !== "function") {
+		cachedCAs = undefined;
+		return cachedCAs;
+	}
+	try {
+		const certs = [...tls.getCACertificates("default"), ...tls.getCACertificates("system")];
+		// An empty ca list would make Node trust nothing, worse than not passing it at all.
+		cachedCAs = certs.length > 0 ? certs : undefined;
+	} catch (e) {
+		console.error("Granola: failed to read CA certificates:", e);
+		cachedCAs = undefined;
+	}
+	return cachedCAs;
+}
+
+/** Reset cached CAs (used by unit tests). */
+export function resetCachedCAs(): void {
+	cachedCAs = null;
+}
 
 /**
  * Parse a Retry-After header into milliseconds.
@@ -107,6 +143,7 @@ function doFetch(input: string | URL, init: RequestInit | undefined, redirectCou
 		const url = typeof input === "string" ? new URL(input) : input;
 		const isHttps = url.protocol === "https:";
 		const fn = isHttps ? httpsRequest : httpRequest;
+		const ca = isHttps ? getCACertificates() : undefined;
 
 		// Convert headers
 		const headers: Record<string, string> = {};
@@ -142,6 +179,7 @@ function doFetch(input: string | URL, init: RequestInit | undefined, redirectCou
 				path: url.pathname + url.search,
 				method: init?.method || "GET",
 				headers,
+				...(ca ? { ca } : {}),
 			},
 			(res: IncomingMessage) => {
 				// Handle redirects

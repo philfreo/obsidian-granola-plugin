@@ -11,10 +11,13 @@ import { GranolaAuthProvider, type AuthStorage } from "./auth";
 import { GranolaMcpClient } from "./mcp-client";
 import { syncFolderFirst } from "./note-scope";
 import { RateLimiter } from "./rate-limiter";
+import { fetchMeetingTranscript, spokenRange, formatSegments } from "./granola-api";
+import type { SpokenRange } from "./granola-api";
 import {
 	parseMeetingsResponse,
 	parseTranscriptResponse,
 	parseAccountInfo,
+	parseClockTime,
 	buildMeetingData,
 	excludeSelf,
 	type ParsedMeeting,
@@ -459,6 +462,12 @@ export default class GranolaSyncPlugin extends Plugin {
 			this.settings.syncFrequency = data.autoSyncOnStartup ? "startup" : "manual";
 		}
 
+		// Migrate legacy includeTranscripts to syncTranscripts if present
+		if (data?.includeTranscripts !== undefined && data.syncTranscripts === undefined) {
+			this.settings.syncTranscripts = Boolean(data.includeTranscripts);
+			this.pluginData.syncTranscripts = Boolean(data.includeTranscripts);
+		}
+
 		// Load accounts, migrating a legacy single-account connection if present.
 		this.accounts = this.pluginData.accounts ?? [];
 		if (this.accounts.length === 0 && this.pluginData.oauthTokens) {
@@ -757,6 +766,9 @@ export default class GranolaSyncPlugin extends Plugin {
 				title: cached.title,
 				date: cached.date,
 				startTime: cached.startTime,
+				startMinutes: cached.startMinutes !== undefined ? cached.startMinutes : parseClockTime(cached.startTime),
+				endMinutes: cached.endMinutes ?? null,
+				durationMinutes: cached.durationMinutes ?? "",
 				created: cached.created,
 				url: cached.url,
 				folder: primaryFolder,
@@ -785,9 +797,15 @@ export default class GranolaSyncPlugin extends Plugin {
 				? existingTranscriptFile.basename
 				: transcriptPathInfo.filename;
 
-			const content = applyTemplate(template, meetingData, emailToNoteTitle, {
-				granola_meeting_transcript: transcriptFilename,
-			});
+			const content = applyTemplate(
+				template,
+				meetingData,
+				emailToNoteTitle,
+				{
+					granola_meeting_transcript: transcriptFilename,
+				},
+				this.settings.durationStyle,
+			);
 
 			const existingFile = existingDocs.get(cached.id);
 			if (existingFile) {
@@ -840,6 +858,9 @@ export default class GranolaSyncPlugin extends Plugin {
 				title: cached.title,
 				date: cached.date,
 				startTime: cached.startTime,
+				startMinutes: cached.startMinutes !== undefined ? cached.startMinutes : parseClockTime(cached.startTime),
+				endMinutes: cached.endMinutes ?? null,
+				durationMinutes: cached.durationMinutes ?? "",
 				created: cached.created,
 				url: cached.url,
 				folder: primaryFolder,
@@ -946,6 +967,9 @@ export default class GranolaSyncPlugin extends Plugin {
 				title: cached.title,
 				date: cached.date,
 				startTime: cached.startTime,
+				startMinutes: cached.startMinutes !== undefined ? cached.startMinutes : parseClockTime(cached.startTime),
+				endMinutes: cached.endMinutes ?? null,
+				durationMinutes: cached.durationMinutes ?? "",
 				created: cached.created,
 				url: cached.url,
 				folder: primaryFolder,
@@ -981,6 +1005,7 @@ export default class GranolaSyncPlugin extends Plugin {
 				{
 					granola_meeting_note: noteLinkName,
 				},
+				this.settings.durationStyle,
 			);
 
 			const existingTranscriptFile = existingTranscripts.get(cached.id);
@@ -1042,6 +1067,9 @@ export default class GranolaSyncPlugin extends Plugin {
 				title: cached.title,
 				date: cached.date,
 				startTime: cached.startTime,
+				startMinutes: cached.startMinutes !== undefined ? cached.startMinutes : parseClockTime(cached.startTime),
+				endMinutes: cached.endMinutes ?? null,
+				durationMinutes: cached.durationMinutes ?? "",
 				created: cached.created,
 				url: cached.url,
 				folder: primaryFolder,
@@ -1339,6 +1367,7 @@ export default class GranolaSyncPlugin extends Plugin {
 					id: cached.id,
 					title: cached.title,
 					date: cached.date,
+					url: cached.url || "",
 					startTime: cached.startTime,
 					created: cached.created,
 					participants: cached.participants,
@@ -1372,7 +1401,10 @@ export default class GranolaSyncPlugin extends Plugin {
 						id: item.id,
 						title: item.title,
 						date: meetingData.date,
-						startTime: meetingData.startTime,
+						startTime: meetingData.startTime || "",
+						startMinutes: meetingData.startMinutes,
+						endMinutes: meetingData.endMinutes,
+						durationMinutes: meetingData.durationMinutes,
 						created: meetingData.created,
 						url: meetingData.url,
 						folder: primaryFolder,
@@ -1401,6 +1433,7 @@ export default class GranolaSyncPlugin extends Plugin {
 						id: cached.id,
 						title: cached.title,
 						date: cached.date,
+						url: cached.url || "",
 						startTime: cached.startTime,
 						created: cached.created,
 						participants: cached.participants,
@@ -1441,9 +1474,46 @@ export default class GranolaSyncPlugin extends Plugin {
 					message: `Saving meeting ${i + 1} of ${noteTargetDetails.length}...`,
 				});
 
-				const meetingData = buildMeetingData(details, "");
+				// With an API key the transcript comes from the REST API,
+				// whose segments carry the timestamps a meeting's length is
+				// measured from. Without an API key, meetings rely on listed time.
+				const apiKey = this.settings.granolaApiKey.trim();
+				let transcript = "";
+				let spoken: SpokenRange | null = null;
+				if (apiKey) {
+					try {
+						const segments = await fetchMeetingTranscript(
+							apiKey,
+							details.id,
+							Date.parse(details.date),
+						);
+						if (segments) {
+							transcript = formatSegments(segments);
+							spoken = spokenRange(segments);
+							if (transcript && !(await this.cacheStore.hasTranscript(details.id))) {
+								await this.cacheStore.saveTranscript(details.id, transcript);
+							}
+						} else {
+							console.warn(`Granola: no API note matches meeting ${details.id}`);
+						}
+					} catch (error) {
+						console.error(`Granola: API transcript failed for ${details.id}`, error);
+					}
+				}
+
+				const meetingData = buildMeetingData(details, transcript, spoken);
 				if (this.settings.excludeSelfFromAttendees && account.email) {
 					meetingData.participants = excludeSelf(meetingData.participants, account.email);
+				}
+
+				if (apiKey && spoken) {
+					const cached = await this.cacheStore.getMeeting(details.id);
+					if (cached) {
+						cached.startMinutes = meetingData.startMinutes;
+						cached.endMinutes = meetingData.endMinutes;
+						cached.durationMinutes = meetingData.durationMinutes;
+						await this.cacheStore.saveMeeting(cached);
+					}
 				}
 
 				const existingFile = ctx.existingDocs.get(details.id);
@@ -1465,9 +1535,15 @@ export default class GranolaSyncPlugin extends Plugin {
 					? existingTranscriptFile.basename
 					: transcriptPathInfo.filename;
 
-				const content = applyTemplate(ctx.template, meetingData, ctx.emailToNoteTitle, {
-					granola_meeting_transcript: transcriptLinkName,
-				});
+				const content = applyTemplate(
+					ctx.template,
+					meetingData,
+					ctx.emailToNoteTitle,
+					{
+						granola_meeting_transcript: transcriptLinkName,
+					},
+					this.settings.durationStyle,
+				);
 
 				if (existingFile) {
 					let wasModified = false;
@@ -1563,6 +1639,12 @@ export default class GranolaSyncPlugin extends Plugin {
 
 				try {
 					const meetingData = buildMeetingData(details, transcript);
+					const cachedMeeting = await this.cacheStore.getMeeting(m.id);
+					if (cachedMeeting) {
+						if (cachedMeeting.startMinutes !== undefined) meetingData.startMinutes = cachedMeeting.startMinutes;
+						if (cachedMeeting.endMinutes !== undefined) meetingData.endMinutes = cachedMeeting.endMinutes;
+						if (cachedMeeting.durationMinutes !== undefined) meetingData.durationMinutes = cachedMeeting.durationMinutes;
+					}
 					if (this.settings.excludeSelfFromAttendees && account.email) {
 						meetingData.participants = excludeSelf(meetingData.participants, account.email);
 					}
@@ -1592,6 +1674,7 @@ export default class GranolaSyncPlugin extends Plugin {
 						{
 							granola_meeting_note: noteLinkName,
 						},
+						this.settings.durationStyle,
 					);
 
 					await this.ensureFolderExists(transcriptPathInfo.folder);
