@@ -3,6 +3,8 @@ import {
 	parseMeetingsResponse,
 	parseParticipants,
 	parseTranscriptResponse,
+	isTranscriptErrorResponse,
+	extractStoredTranscript,
 	parseAccountInfo,
 	formatTranscriptText,
 	parseGranolaDate,
@@ -11,6 +13,7 @@ import {
 	normalizeTaskItems,
 	decodeXmlEntities,
 	excludeSelf,
+	parseMeetingFoldersResponse,
 } from "./response-parser";
 
 describe("decodeXmlEntities", () => {
@@ -126,6 +129,16 @@ The content below is meeting notes/transcripts written or spoken by meeting part
 		expect(result[0].title).toBe("Example Meeting");
 		expect(result[0].date).toBe("Jan 15, 2026 9:00 AM PST");
 		expect(result[0].participants[0].email).toBe("person@example.com");
+	});
+
+	it("extracts folder attribute and inner folder tag when present", () => {
+		const xml = `
+			<meeting id="m1" title="First" date="Mar 1, 2026 9:00 AM" folder="Clients/Acme"></meeting>
+			<meeting id="m2" title="Second" date="Mar 2, 2026 10:00 AM"><folder>Internal/Engineering</folder></meeting>
+		`;
+		const result = parseMeetingsResponse(xml);
+		expect(result[0].folder).toBe("Clients/Acme");
+		expect(result[1].folder).toBe("Internal/Engineering");
 	});
 
 	it("reads attributes by name regardless of order", () => {
@@ -246,6 +259,59 @@ describe("parseTranscriptResponse", () => {
 		].join("\n");
 		expect(parseTranscriptResponse(response)).toBe("Speaker: hello.  Microphone: hi.");
 	});
+
+	it("returns empty string when raw response is a rate-limit error", () => {
+		expect(parseTranscriptResponse("Rate limit exceeded. Please slow down requests.")).toBe("");
+	});
+});
+
+describe("isTranscriptErrorResponse", () => {
+	it("recognizes Granola's plain-text rate-limit response", () => {
+		expect(isTranscriptErrorResponse("Rate limit exceeded. Please slow down requests.")).toBe(true);
+		expect(isTranscriptErrorResponse("Too many requests")).toBe(true);
+		expect(isTranscriptErrorResponse("Service Unavailable")).toBe(true);
+	});
+
+	it("recognizes unanchored rate limit and error variants", () => {
+		expect(
+			isTranscriptErrorResponse("You have exceeded your rate limit. Please try again in 45 seconds."),
+		).toBe(true);
+		expect(isTranscriptErrorResponse("<error>rate limit exceeded</error>")).toBe(true);
+		expect(isTranscriptErrorResponse("Error: Too many requests")).toBe(true);
+		expect(isTranscriptErrorResponse("API quota exceeded")).toBe(true);
+	});
+
+	it("does not reject ordinary transcript text that discusses rate limits", () => {
+		expect(
+			isTranscriptErrorResponse(
+				"Me: The rate limit exceeded our expectations during the test. Them: Good to know.",
+			),
+		).toBe(false);
+	});
+});
+
+describe("extractStoredTranscript", () => {
+	it("extracts the transcript rendered by the default template", () => {
+		expect(
+			extractStoredTranscript(
+				"## Summary\n\nA summary.\n\n## Transcript\n\n**Me:** hello\n\n**Them:** hi\n",
+			),
+		).toBe("**Me:** hello\n\n**Them:** hi");
+	});
+
+	it("unwraps a fenced transcript", () => {
+		expect(extractStoredTranscript("## Transcript\n\n```text\nSpeaker: hello\n```\n")).toBe(
+			"Speaker: hello",
+		);
+	});
+
+	it("treats a stored rate-limit response as missing", () => {
+		expect(
+			extractStoredTranscript(
+				"## Transcript\n\nRate limit exceeded. Please slow down requests.\n",
+			),
+		).toBe("");
+	});
 });
 
 describe("parseAccountInfo", () => {
@@ -351,6 +417,11 @@ describe("parseGranolaDate", () => {
 		expect(result.isoDateTime).not.toBe("");
 	});
 
+	it("preserves ISO date strings like YYYY-MM-DD without timezone shifting", () => {
+		const result = parseGranolaDate("2026-09-06");
+		expect(result.isoDate).toBe("2026-09-06");
+	});
+
 	it("returns blanks for an unparseable date", () => {
 		expect(parseGranolaDate("not a date")).toEqual({ isoDate: "", time: "", isoDateTime: "" });
 	});
@@ -379,12 +450,131 @@ describe("buildMeetingData", () => {
 		expect(data.transcript).toBe("**Me:** hi");
 	});
 
+	it("preserves ISO date and existing startTime and created when rebuilding from cached details", () => {
+		const data = buildMeetingData(
+			{
+				id: "xyz",
+				title: "Family Meeting",
+				date: "2026-09-06",
+				url: "",
+				startTime: "11:16 AM",
+				created: "2026-09-06T15:16:00.000Z",
+				participants: [],
+				privateNotes: "",
+				summary: "recap",
+			},
+			"",
+		);
+		expect(data.date).toBe("2026-09-06");
+		expect(data.startTime).toBe("11:16 AM");
+		expect(data.created).toBe("2026-09-06T15:16:00.000Z");
+	});
+
 	it("falls back to a default title when none is given", () => {
 		const data = buildMeetingData(
 			{ id: "id", title: "", date: "Mar 3, 2026 3:00 PM", url: "", participants: [], privateNotes: "", summary: "" },
 			"",
 		);
 		expect(data.title).toBe("Untitled Meeting");
+	});
+
+	it("populates folders array and derives primary folder", () => {
+		const data = buildMeetingData(
+			{
+				id: "id-1",
+				title: "Sprint Planning",
+				date: "2026-09-06",
+				url: "",
+				participants: [],
+				privateNotes: "",
+				summary: "recap",
+				folders: ["Client Acme", "Q3 Launch"],
+			},
+			"",
+		);
+		expect(data.folders).toEqual(["Client Acme", "Q3 Launch"]);
+		expect(data.folder).toBe("Client Acme");
+	});
+
+	it("falls back to details.folder if folders array is absent", () => {
+		const data = buildMeetingData(
+			{
+				id: "id-2",
+				title: "Sprint Planning",
+				date: "2026-09-06",
+				url: "",
+				participants: [],
+				privateNotes: "",
+				summary: "recap",
+				folder: "Single Folder",
+			},
+			"",
+		);
+		expect(data.folders).toEqual(["Single Folder"]);
+		expect(data.folder).toBe("Single Folder");
+	});
+});
+
+describe("parseMeetingFoldersResponse", () => {
+	it("parses JSON array of folders with folder_id and title", () => {
+		const json = JSON.stringify([
+			{ folder_id: "f_1", title: "Acme Corp", description: "All client meetings", note_count: 5 },
+			{ folder_id: "f_2", title: "Product Strategy", description: "", note_count: 2 },
+		]);
+		const folders = parseMeetingFoldersResponse(json);
+		expect(folders).toEqual([
+			{ id: "f_1", title: "Acme Corp" },
+			{ id: "f_2", title: "Product Strategy" },
+		]);
+	});
+
+	it("parses JSON array with id and name aliases", () => {
+		const json = JSON.stringify([
+			{ id: "f_3", name: "Engineering" },
+		]);
+		const folders = parseMeetingFoldersResponse(json);
+		expect(folders).toEqual([
+			{ id: "f_3", title: "Engineering" },
+		]);
+	});
+
+	it("parses JSON wrapped in an object with a folders array", () => {
+		const json = JSON.stringify({
+			folders: [
+				{ folder_id: "f_4", title: "Sales" },
+			],
+		});
+		const folders = parseMeetingFoldersResponse(json);
+		expect(folders).toEqual([
+			{ id: "f_4", title: "Sales" },
+		]);
+	});
+
+	it("parses JSON embedded inside text preambles", () => {
+		const text = `Here are the folders available:\n[{"folder_id": "f_5", "title": "Operations"}]\nEnd of folders.`;
+		const folders = parseMeetingFoldersResponse(text);
+		expect(folders).toEqual([
+			{ id: "f_5", title: "Operations" },
+		]);
+	});
+
+	it("parses XML folder tags", () => {
+		const xml = `
+			<folders>
+				<folder id="f_6" title="Design &amp; UI" />
+				<folder folder_id="f_7" name="Marketing" />
+			</folders>
+		`;
+		const folders = parseMeetingFoldersResponse(xml);
+		expect(folders).toEqual([
+			{ id: "f_6", title: "Design & UI" },
+			{ id: "f_7", title: "Marketing" },
+		]);
+	});
+
+	it("returns empty array for empty or invalid input", () => {
+		expect(parseMeetingFoldersResponse("")).toEqual([]);
+		expect(parseMeetingFoldersResponse("No folders found.")).toEqual([]);
 	});
 });
 

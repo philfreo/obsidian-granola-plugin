@@ -14,6 +14,10 @@ export interface ParsedMeeting {
 	/** Granola's own link to the note; "" when the response omits it. */
 	url: string;
 	participants: ParsedParticipant[];
+	folder?: string;
+	folders?: string[];
+	startTime?: string;
+	created?: string;
 }
 
 export interface ParsedMeetingDetails extends ParsedMeeting {
@@ -25,6 +29,7 @@ export interface MeetingData {
 	id: string;
 	title: string;
 	date: string; // ISO date "2026-03-03"
+	startTime?: string;
 	/** Minutes since midnight, in the meeting's own timezone; null when unknown. */
 	startMinutes: number | null;
 	/** Minutes since midnight; may exceed 1440 when a meeting runs past midnight. */
@@ -36,6 +41,13 @@ export interface MeetingData {
 	enhancedNotes: string;
 	transcript: string;
 	participants: ParsedParticipant[];
+	folder?: string;
+	folders?: string[];
+}
+
+export interface ParsedFolder {
+	id: string;
+	title: string;
 }
 
 /**
@@ -113,6 +125,20 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		if (!id) continue;
 		const title = attr(openTag, "title");
 		const date = attr(openTag, "date");
+		const folderAttr =
+			attr(openTag, "folder") ||
+			attr(openTag, "folder_name") ||
+			attr(openTag, "folder_title") ||
+			attr(openTag, "granola_folder");
+		let folder = folderAttr || undefined;
+		if (!folder) {
+			const folderTagMatch =
+				body.match(/<folder>\s*([\s\S]*?)\s*<\/folder>/i) ||
+				body.match(/<folder_name>\s*([\s\S]*?)\s*<\/folder_name>/i);
+			if (folderTagMatch) {
+				folder = decodeXmlEntities(folderTagMatch[1].trim()) || undefined;
+			}
+		}
 		const url = attr(openTag, "url");
 
 		const participantsMatch = body.match(/<known_participants>\s*([\s\S]*?)\s*<\/known_participants>/);
@@ -126,7 +152,7 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		const summaryMatch = body.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/);
 		const summary = summaryMatch ? normalizeTaskItems(decodeXmlEntities(summaryMatch[1].trim())) : "";
 
-		meetings.push({ id, title, date, url, participants, privateNotes, summary });
+		meetings.push({ id, title, date, url, participants, privateNotes, summary, folder });
 	}
 
 	return meetings;
@@ -246,7 +272,48 @@ export function parseTranscriptResponse(text: string): string {
 			// try next candidate
 		}
 	}
+	if (isTranscriptErrorResponse(text)) {
+		return "";
+	}
 	return text.trim();
+}
+
+/**
+ * Granola's MCP endpoint can return a short plain-text error as successful tool
+ * content. Without this guard the error body is indistinguishable from a
+ * legacy plain-text transcript and gets written into the note.
+ */
+export function isTranscriptErrorResponse(text: string): boolean {
+	const normalized = text.trim().replace(/\s+/g, " ");
+	if (!normalized || normalized.length > 500) return false;
+
+	// If the text contains recognized dialogue turns (e.g. Me:, Them:, Microphone:, Speaker:),
+	// it's dialogue content discussing rate limits rather than an API error response.
+	if (/(?:^|\n|\b)(?:\*\*)?(?:Me|Them|Microphone|Speaker)(?:\*\*)?:/i.test(text)) {
+		return false;
+	}
+
+	return /(?:rate limit|too many requests|request rate limited|slow down requests|quota exceeded|temporarily unavailable|service unavailable)/i.test(
+		normalized,
+	);
+}
+
+/**
+ * Recover the transcript rendered by the default template so an
+ * existing note can be refreshed without downloading the same immutable
+ * transcript again. Known API error bodies are treated as missing, allowing a
+ * later sync to repair notes written by older plugin versions.
+ */
+export function extractStoredTranscript(content: string): string {
+	const section = content.match(/(?:^|\n)## Transcript\s*\n([\s\S]*?)(?=\n##\s|\n---\s*$|$)/);
+	if (!section) return "";
+
+	let body = section[1].trim();
+	if (body.startsWith("```")) {
+		body = body.replace(/^```[^\n]*\n?/, "").replace(/\n?```\s*$/, "").trim();
+	}
+
+	return isTranscriptErrorResponse(body) ? "" : body;
 }
 
 // Speaker labels are capitalized words followed by a colon: a participant's
@@ -305,10 +372,29 @@ export function parseClockTime(time12: string): number | null {
 }
 
 /**
- * Parse a Granola date string like "Mar 3, 2026 3:00 PM" into components.
+ * Parse a Granola date string like "Mar 3, 2026 3:00 PM" or "2026-09-06" into components.
  */
 export function parseGranolaDate(dateStr: string): { isoDate: string; time: string; isoDateTime: string } {
-	const d = new Date(dateStr);
+	if (!dateStr || !dateStr.trim()) {
+		return { isoDate: "", time: "", isoDateTime: "" };
+	}
+
+	const trimmed = dateStr.trim();
+
+	// If dateStr is already a bare ISO date "YYYY-MM-DD", preserve it directly to prevent
+	// new Date("YYYY-MM-DD") UTC-midnight timezone shifting (which rolls back 1 day in timezones west of UTC).
+	const isoDateOnlyMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})$/);
+	if (isoDateOnlyMatch) {
+		const isoDate = isoDateOnlyMatch[1];
+		const d = new Date(`${isoDate}T00:00:00.000Z`);
+		return {
+			isoDate,
+			time: "",
+			isoDateTime: !isNaN(d.getTime()) ? d.toISOString() : "",
+		};
+	}
+
+	const d = new Date(trimmed);
 	if (isNaN(d.getTime())) {
 		return { isoDate: "", time: "", isoDateTime: "" };
 	}
@@ -319,10 +405,99 @@ export function parseGranolaDate(dateStr: string): { isoDate: string; time: stri
 	const isoDate = `${year}-${month}-${day}`;
 
 	// Extract time from original string
-	const timeMatch = dateStr.match(/\d{1,2}:\d{2}\s*[AP]M/i);
+	const timeMatch = trimmed.match(/\d{1,2}:\d{2}\s*[AP]M/i);
 	const time = timeMatch ? timeMatch[0] : "";
 
 	return { isoDate, time, isoDateTime: d.toISOString() };
+}
+
+/**
+ * Parse the list_meeting_folders response from Granola's MCP server.
+ * Supports JSON arrays ([{ folder_id, title }]), JSON objects with folders array ({ folders: [...] }),
+ * and XML formats (<folder id="..." title="..." />).
+ */
+export function parseMeetingFoldersResponse(text: string): ParsedFolder[] {
+	if (!text?.trim()) return [];
+
+	const trimmed = text.trim();
+	let jsonCandidate: unknown = null;
+	try {
+		jsonCandidate = JSON.parse(trimmed);
+	} catch {
+		const firstBracket = trimmed.indexOf("[");
+		const lastBracket = trimmed.lastIndexOf("]");
+		if (firstBracket !== -1 && lastBracket > firstBracket) {
+			try {
+				jsonCandidate = JSON.parse(trimmed.slice(firstBracket, lastBracket + 1));
+			} catch {
+				// fall through
+			}
+		}
+		if (!jsonCandidate) {
+			const firstBrace = trimmed.indexOf("{");
+			const lastBrace = trimmed.lastIndexOf("}");
+			if (firstBrace !== -1 && lastBrace > firstBrace) {
+				try {
+					jsonCandidate = JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+				} catch {
+					// fall through
+				}
+			}
+		}
+	}
+
+	if (jsonCandidate) {
+		let rawList: unknown[] = [];
+		if (Array.isArray(jsonCandidate)) {
+			rawList = jsonCandidate;
+		} else if (
+			typeof jsonCandidate === "object" &&
+			jsonCandidate !== null &&
+			"folders" in jsonCandidate &&
+			Array.isArray(jsonCandidate.folders)
+		) {
+			rawList = jsonCandidate.folders;
+		}
+
+		const results: ParsedFolder[] = [];
+		for (const item of rawList) {
+			if (typeof item === "object" && item !== null) {
+				const record = item as Record<string, unknown>;
+				const rawId = record.folder_id ?? record.id;
+				const rawTitle = record.title ?? record.name;
+				const id = typeof rawId === "string" || typeof rawId === "number" ? String(rawId).trim() : "";
+				const title = typeof rawTitle === "string" || typeof rawTitle === "number" ? String(rawTitle).trim() : "";
+				if (id || title) {
+					results.push({ id, title: title || id });
+				}
+			}
+		}
+		if (results.length > 0) return results;
+	}
+
+	// Fall back to XML parsing: <folder ...>
+	const results: ParsedFolder[] = [];
+	const folderRegex = /<folder\s+((?:"[^"]*"|[^>"])*?)(?:\/?>|>([\s\S]*?)<\/folder>)/gi;
+	let match;
+	while ((match = folderRegex.exec(trimmed)) !== null) {
+		const openTag = match[1];
+		const body = match[2] || "";
+		const id = attr(openTag, "id") || attr(openTag, "folder_id") || "";
+		let title = attr(openTag, "title") || attr(openTag, "name") || "";
+		if (!title && body) {
+			const titleMatch =
+				body.match(/<title>\s*([\s\S]*?)\s*<\/title>/i) ||
+				body.match(/<name>\s*([\s\S]*?)\s*<\/name>/i);
+			if (titleMatch) {
+				title = decodeXmlEntities(titleMatch[1].trim());
+			}
+		}
+		if (id || title) {
+			results.push({ id, title: title || id });
+		}
+	}
+
+	return results;
 }
 
 /**
@@ -345,6 +520,8 @@ export function buildMeetingData(
 	spoken: SpokenRange | null = null,
 ): MeetingData {
 	const { isoDate, time, isoDateTime } = parseGranolaDate(details.date);
+	const folders = details.folders ?? (details.folder ? [details.folder] : []);
+	const folder = folders[0] ?? details.folder;
 	const listedMinutes = parseClockTime(time);
 	const listedInstant = Date.parse(details.date);
 	const canTime = listedMinutes !== null && spoken !== null && !isNaN(listedInstant);
@@ -377,11 +554,12 @@ export function buildMeetingData(
 		id: details.id,
 		title: details.title || "Untitled Meeting",
 		date: isoDate,
+		startTime: details.startTime || time,
 		startMinutes,
 		endMinutes,
 		durationMinutes:
 			endMinutes === null || startMinutes === null ? "" : String(endMinutes - startMinutes),
-		created: isoDateTime,
+		created: details.created || isoDateTime,
 		// Granola now returns the note's link itself. Falling back to building
 		// one keeps older responses, and any meeting whose tag omits the
 		// attribute, from landing in a note with an empty link.
@@ -390,5 +568,7 @@ export function buildMeetingData(
 		enhancedNotes: details.summary,
 		transcript: formatTranscriptText(transcript),
 		participants: details.participants,
+		folder,
+		folders,
 	};
 }

@@ -17,12 +17,15 @@ import type { IncomingMessage } from "node:http";
 import tls from "node:tls";
 
 const MAX_REDIRECTS = 5;
+export const DEFAULT_MAX_RETRIES = 3;
+export const DEFAULT_BASE_RETRY_DELAY_MS = 1500;
+export const DEFAULT_MAX_RETRY_DELAY_MS = 70000;
 
 // null = not yet computed, undefined = unavailable (use Node's defaults).
 let cachedCAs: string[] | undefined | null = null;
 
 /** Node's bundled CAs plus the OS trust store, when Node exposes them. Cached after first call. */
-function getCACertificates(): string[] | undefined {
+export function getCACertificates(): string[] | undefined {
 	if (cachedCAs !== null) return cachedCAs;
 	if (typeof tls.getCACertificates !== "function") {
 		cachedCAs = undefined;
@@ -39,8 +42,100 @@ function getCACertificates(): string[] | undefined {
 	return cachedCAs;
 }
 
-export function nodeFetch(input: string | URL, init?: RequestInit): Promise<Response> {
-	return doFetch(input, init, 0);
+/** Reset cached CAs (used by unit tests). */
+export function resetCachedCAs(): void {
+	cachedCAs = null;
+}
+
+/**
+ * Parse a Retry-After header into milliseconds.
+ * Supports either integer seconds or an HTTP-date string.
+ */
+export function parseRetryAfter(headerValue: string | null | undefined): number | null {
+	if (!headerValue) return null;
+	const trimmed = headerValue.trim();
+	if (!trimmed) return null;
+	const seconds = Number(trimmed);
+	if (!isNaN(seconds) && seconds >= 0) {
+		return seconds * 1000;
+	}
+	const date = new Date(trimmed);
+	if (!isNaN(date.getTime())) {
+		const diff = date.getTime() - Date.now();
+		return Math.max(0, diff);
+	}
+	return null;
+}
+
+export interface RetryOptions {
+	maxRetries?: number;
+	baseRetryDelayMs?: number;
+	maxRetryDelayMs?: number;
+	randomFn?: () => number;
+}
+
+/**
+ * Compute the delay for a retry attempt.
+ */
+export function computeRetryDelay(
+	attempt: number,
+	retryAfterMs: number | null,
+	baseDelayMs = DEFAULT_BASE_RETRY_DELAY_MS,
+	maxDelayMs = DEFAULT_MAX_RETRY_DELAY_MS,
+	randomFn = Math.random,
+): number {
+	if (retryAfterMs !== null) {
+		return Math.min(retryAfterMs + randomFn() * 250, maxDelayMs);
+	}
+	const backoff = baseDelayMs * Math.pow(2, attempt);
+	const jitter = randomFn() * 500;
+	return Math.min(backoff + jitter, maxDelayMs);
+}
+
+export async function nodeFetch(
+	input: string | URL,
+	init?: RequestInit,
+	retryOptions?: RetryOptions,
+): Promise<Response> {
+	let attempt = 0;
+	const maxRetries = retryOptions?.maxRetries ?? DEFAULT_MAX_RETRIES;
+	const maxDelay = retryOptions?.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
+	const baseDelay = retryOptions?.baseRetryDelayMs ?? DEFAULT_BASE_RETRY_DELAY_MS;
+	const randomFn = retryOptions?.randomFn ?? Math.random;
+
+	while (true) {
+		if (init?.signal?.aborted) {
+			throw new DOMException("The operation was aborted", "AbortError");
+		}
+		const response = await doFetch(input, init, 0);
+		if ((response.status === 429 || response.status === 503) && attempt < maxRetries) {
+			const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
+			const delay = computeRetryDelay(attempt, retryAfter, baseDelay, maxDelay, randomFn);
+			attempt++;
+			// Consume body so Node releases socket
+			await response.text().catch(() => {});
+			await sleepWithAbort(delay, init?.signal);
+			continue;
+		}
+		return response;
+	}
+}
+
+function sleepWithAbort(delayMs: number, signal?: AbortSignal | null): Promise<void> {
+	return new Promise<void>((resolve, reject) => {
+		const timer = window.setTimeout(resolve, delayMs);
+
+		if (signal) {
+			signal.addEventListener(
+				"abort",
+				() => {
+					window.clearTimeout(timer);
+					reject(new DOMException("The operation was aborted", "AbortError"));
+				},
+				{ once: true },
+			);
+		}
+	});
 }
 
 function doFetch(input: string | URL, init: RequestInit | undefined, redirectCount: number): Promise<Response> {
@@ -142,6 +237,10 @@ function doFetch(input: string | URL, init: RequestInit | undefined, redirectCou
 		);
 
 		req.on("error", reject);
+
+		req.setTimeout(60000, () => {
+			req.destroy(new Error("Request timed out after 60 seconds"));
+		});
 
 		if (init?.signal) {
 			if (init.signal.aborted) {

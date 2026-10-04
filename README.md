@@ -9,11 +9,16 @@ This plugin uses [Granola's official MCP API](https://docs.granola.ai/help-cente
 - **Official API**: Uses Granola's MCP API with OAuth authentication
 - **Multiple accounts**: Connect more than one Granola account and sync them all into the same vault
 - **Auto-sync**: Automatically sync meetings at configurable intervals (1m to 12h)
-- **Template-based**: Customize output format with your own template
+- **Local JSON Cache**: Stores raw meeting metadata and transcripts in separate files (`cache/meetings/` and `cache/transcripts/`), protecting against data loss and rate limits
+- **Instant Re-rendering**: Re-render all your notes and transcripts in under a second when templates or folder routing change, without making any network calls
+- **Standalone Transcripts**: Decouples full transcripts into separate documents (`type: transcript`) bidirectionally linked with meeting notes (`type: meeting`), keeping notes lightweight and preventing transcript API calls from blocking note creation
+- **Live Progress & Interruption**: Real-time sync progress with item counts, transcript pacing countdown, status bar indicator, and a "Stop sync" button
+- **Custom Path Routing**: Route notes and transcripts using `{granolaFolder}`, `{meeting_date}`, `{meeting_name}`, and `{id}`. Transcripts can be saved side-by-side or in custom subfolders
+- **Rate Limit Protection**: Built-in 65-second spacing between transcript downloads with reactive exponential backoff on HTTP 429
+- **Template-based**: Customize output format with separate templates for meeting notes and transcripts
 - **Smart deduplication**: Tracks meetings by ID to avoid duplicates
 - **Preserve edits**: Option to skip existing notes so your local changes aren't overwritten
 - **Attendee linking**: Automatically link attendees to existing notes by email
-- **Transcripts**: Optionally include full meeting transcripts
 
 There are other ([1](https://github.com/dannymcc/Granola-to-Obsidian), [2](https://github.com/tomelliot/obsidian-granola-sync)) Granola plugins for Obsidian, but I found their implementation lacking for my needs. They either had unnecessary complexity or didn't support features like bringing in private notes, linking to attendee Person notes, or customizing the note template/frontmatter. This plugin fits my workflow better.
 
@@ -33,7 +38,7 @@ BRAT will automatically keep the plugin updated.
 
 ### Manual Installation
 1. Create a folder `<vault>/.obsidian/plugins/granola-meetings-simple-sync/`
-2. Download `main.js` and `manifest.json` from the [latest release](https://github.com/philfreo/obsidian-granola-plugin/releases) into that folder
+2. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/philfreo/obsidian-granola-plugin/releases) into that folder
 3. Reload Obsidian, then enable the plugin in Settings → Community plugins
 
 ## Setup
@@ -50,39 +55,84 @@ To sync more than one Granola account, click **Add Granola account** in settings
 
 ![Settings screenshot](docs/options-screenshot.png)
 
+### Sync & Cache Settings
+
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Time range | Last 30 days | How far back to look for meetings |
+| Time range | Last 30 days | How far back to look for meetings. Options: This week, Last week, Last 30 days, Last 90 days, Last 180 days, Last 1 year, All time. (Note: Granola Free plans restrict history to 30 days) |
 | Sync frequency | Every 15 minutes | How often to sync. Options: Manual only, On startup, 1m, 15m, 30m, 60m, 12h |
 | Only my meetings | On | Sync only meetings you recorded or were listed as a participant in, including notes shared with you. Turn off to also sync every workspace-visible meeting |
-| Folder path | `Meetings` | Where to save meeting notes. Takes date tokens, so `Meetings/{date:YYYY/MM}` files each meeting under its own month |
-| Filename pattern | `{date} {title}` | Pattern for filenames. Supports `{date}`, `{date:YYYY-MM-DD}`, `{title}`, `{id}` |
-| Template path | `Templates/Granola.md` | Path to your template file |
-| Show ribbon icon | On | Show a sync button in the left sidebar |
-| Skip existing notes | On | Don't overwrite notes you've edited. Existing notes are matched by `granola_id` anywhere in your vault, not just the sync folder, so notes you've moved aren't duplicated |
 | Granola API key | empty | Optional `grn_…` key enabling meeting length and end time. Create it in the Granola desktop app under Settings > Connectors > API keys; needs a Business or Enterprise plan. Stored unencrypted in your vault |
+| Show ribbon icon | On | Show a sync button in the left sidebar |
+| Refresh summaries | — | Button to query Granola for updated summaries and refresh the cache/notes without touching transcripts |
+| Re-render notes from cache | — | Button to instantly regenerate all vault notes from local disk cache using current templates and folder patterns without contacting Granola |
+| Clear local cache | — | Button to purge the local raw JSON cache |
+
+### Notes & Routing Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Folder path | `Meetings` | Where to save meeting notes. Supports `{granolaFolder}` / `{folder}`, `{meeting_date}` / `{date}`, `{date:YYYY/MM}`, `{meeting_name}` / `{title}`, `{id}` |
+| Filename pattern | `{date} {title}` | Pattern for meeting note filenames. Supports `{date}`, `{date:YYYY-MM-DD}`, `{title}`, `{id}`, `{granolaFolder}` |
+| Template path | `Templates/Granola.md` | Path to your meeting note template file |
 | Duration format | Compact | How `{{granola_duration_formatted}}` is written: Compact (1h 14m), Long (1 hour 14 minutes), or Minutes only (74 minutes) |
-| Include transcripts | Off | Add the full meeting transcript to each note |
+| Update note content on sync | On | Re-renders existing vault notes with fresh content from Granola. Disable to preserve manual edits |
+| Re-route notes on sync | Off | Move/rename existing notes if the folder or filename pattern changes |
+
+### Transcript Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Sync transcripts | Off | Download full transcripts as standalone documents. Transcripts are fetched in Phase 2 with a 65s pacing delay between calls to comply with Granola rate limits |
+| Transcript folder | `{meeting_folder}` | Where to save transcript documents. Defaults to the same folder as the meeting note. Supports `{meeting_folder}`, `{meeting_filename}`, `{granolaFolder}`, `{date}`, `{title}`, `{id}` |
+| Transcript filename pattern | `{filename} (Transcript)` | Pattern for transcript filenames. Supports `{meeting_filename}` / `{filename}`, `{meeting_folder}`, `{date}`, `{title}`, `{id}`, `{granolaFolder}` |
+| Transcript template path | `Templates/Granola Transcript.md` | Path to your transcript document template file |
+| Update transcript content | On | Re-renders existing transcripts on sync |
+| Re-route transcripts | Off | Move/rename existing transcripts if pattern changes |
+
+### Attendees Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
 | Exclude yourself from attendees | On | Leave your own Granola account out of the attendee list |
 | Match attendees by email | On | Link attendees to notes with matching email in frontmatter |
 
-## Usage
+## Usage & Live Progress
 
-1. **Sync meetings**: By default your meetings will be synced every 15 minutes. This setting is customizable, and you can also trigger a sync by clicking the ribbon icon, using the command palette ("Granola Meetings Simple Sync: Sync meetings"), or clicking "Sync now" in settings.
+1. **Triggering a sync**: By default your meetings sync automatically at your chosen frequency. You can also manually trigger a sync by clicking the ribbon icon, running the "Sync meetings" command from the palette, or clicking "Sync now" in plugin settings.
+2. **Real-time Progress & Status Bar**: During a sync, the settings page displays an active progress bar with step-by-step status messages (e.g. `Syncing meetings (3/15)...`, `Next transcript in 42s (2/5)...`). The Obsidian status bar also displays live sync counts and countdowns.
+3. **Interrupting a Sync**: If you need to stop a long-running sync (such as when downloading many transcripts), click the **Stop sync** button in settings. The plugin gracefully aborts network requests and stops the pacing loop immediately. All meetings and transcripts downloaded up to that point are safely preserved in the local cache.
+4. **Re-rendering from Cache**: Whenever you tweak your template, change frontmatter fields, or update your folder routing, you don't need to make any network calls or risk hitting API rate limits. Click **Re-render notes** in settings (or run "Granola Meetings Simple Sync: Re-render notes from cache" from the command palette). All notes and transcripts regenerate in milliseconds from local disk cache!
 
-## Template Variables
+## Two-Stage Architecture & Decoupled Transcripts
 
-Create a template file to customize how your meeting notes look. Use these variables:
+The plugin operates on a robust two-stage pipeline:
 
-### Core
+```
+[Granola MCP API]
+       │
+       ▼ (Stage 1: Fetch & Cache — Network, rate-limited & paced)
+[Local JSON Cache (.obsidian/plugins/.../cache/)]
+   ├── meetings/<meeting-id>.json
+   └── transcripts/<meeting-id>.json
+       │
+       ▼ (Stage 2: Render & Route — Pure local computation, < 1s)
+[Vault Markdown Notes & Transcripts (.md)]
+```
+
+- **Separated Cache Storage**: Meeting metadata and full transcripts are cached in separate JSON files under `<vault>/.obsidian/plugins/granola-meetings-simple-sync/cache/`. Because this directory is inside `.obsidian/`, it is completely invisible to vault search, backlinks, and graph views.
+- **Resumable Transcripts**: If a sync is stopped partway through downloading transcripts, downloaded transcripts are already cached on disk. The next sync resumes immediately without re-fetching existing transcripts.
+- **Two-Document Model**: Meeting notes (`type: meeting`) and transcripts (`type: transcript`) are saved as independent markdown files connected bidirectionally via frontmatter properties `meeting_transcript` and `meeting_note`.
+
+### Available Variables
+
+#### Core Variables
 - `{{granola_id}}` - Unique meeting ID
 - `{{granola_title}}` - Meeting title
 - `{{granola_date}}` - Date (YYYY-MM-DD)
 - `{{granola_url}}` - Link to meeting on Granola web
-- `{{granola_start_time}}` - Start time (e.g., "3:00 PM")
-
 ### Timing
-
+- `{{granola_start_time}}` - Start time (e.g., "3:00 PM")
 - `{{granola_end_time}}` - End time (e.g., "3:35 PM")
 - `{{granola_duration_formatted}}` - Length written out (e.g., "1h 14m"), in the style chosen by the "Duration format" setting
 - `{{granola_duration_min}}` - The same length as a plain number of minutes (e.g., "74"), for arithmetic
@@ -92,14 +142,6 @@ The MCP API Granola gives the plugin reports no end time and no duration, so
 the plugin reads the transcript from Granola's REST API instead, where every
 utterance carries its own start and end timestamp, and the length is measured
 rather than guessed. The key needs a Business or Enterprise plan.
-
-A meeting is measured from the time Granola lists for it rather than from the
-first word spoken, so the length covers waiting as well as talking. A call
-booked for 2:00 that got going at 2:06 and held thirty minutes of
-conversation is reported as thirty-six minutes long. Ad-hoc recordings were
-never scheduled, so Granola lists the moment capture began and there is no
-waiting to account for. A recording whose first word lands before its listed
-time is measured from whichever came first.
 
 Both times are rendered in your own locale, following the language Obsidian
 is set to, so a 24-hour locale gets "14:06" where an English one gets
@@ -123,12 +165,27 @@ is "1h" rather than "1h 0m". Hours are not capped at a day.
 For any wording the three styles don't cover, build your own from
 `{{granola_duration_min}}`, which is a plain number of minutes.
 
-### Content
+#### Folder & Collection Variables
+- `{{granola_folder}}` (aliases: `{{granolaFolder}}`, `{{folder}}`) - Primary folder name
+- `{{granola_folders}}` - Comma-separated list of all folders
+- `{{granola_folders_linked}}` - With Obsidian links: `[[Client Acme]], [[Q3 Launch]]`
+- `{{granola_folders_list}}` - YAML list format
+- `{{granola_folders_linked_list}}` - YAML list with links:
+  ```yaml
+  folders:
+  {{granola_folders_linked_list}}
+  ```
+
+#### Bidirectional Linking Variables
+- `{{granola_meeting_transcript}}` - The filename/title of the linked transcript document (for use in meeting note templates)
+- `{{granola_meeting_note}}` - The filename/title of the linked meeting note (for use in transcript templates)
+
+#### Content Variables
 - `{{granola_private_notes}}` - Your notes from the meeting
 - `{{granola_enhanced_notes}}` - AI-generated content (Summary, Action Items, etc.)
-- `{{granola_transcript}}` - Full transcript (requires "Include transcripts" enabled)
+- `{{granola_transcript}}` - Full transcript text (for transcript templates)
 
-### Attendees
+#### Attendees
 - `{{granola_attendees}}` - Comma-separated names
 - `{{granola_attendees_linked}}` - With Obsidian links: `[[John]], [[Jane]]`
 - `{{granola_attendees_list}}` - YAML list format
@@ -136,19 +193,9 @@ For any wording the three styles don't cover, build your own from
 
 ### Conditional Blocks
 
-Use `{{#variable}}...{{/variable}}` to only render content when a variable is non-empty:
+Use `{{#variable}}...{{/variable}}` to render content only when a variable is non-empty.
 
-```markdown
-{{#granola_transcript}}
-## Transcript
-
-{{granola_transcript}}
-{{/granola_transcript}}
-```
-
-### Default Template
-
-The plugin writes this default template when you first enable it, and again at sync time if no template exists at the configured path:
+### Default Meeting Template (`Templates/Granola.md`)
 
 ```markdown
 ---
@@ -156,6 +203,14 @@ granola_id: {{granola_id}}
 granola_url: {{granola_url}}
 title: "{{granola_title}}"
 date: {{granola_date}}
+type: meeting
+{{#granola_meeting_transcript}}
+meeting_transcript: "[[{{granola_meeting_transcript}}]]"
+{{/granola_meeting_transcript}}
+{{#granola_folders}}
+folders:
+{{granola_folders_linked_list}}
+{{/granola_folders}}
 attendees:
 {{granola_attendees_linked_list}}
 tags:
@@ -172,12 +227,31 @@ tags:
 
 {{/granola_duration_formatted}}{{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
-{{#granola_transcript}}
+```
 
+### Default Transcript Template (`Templates/Granola Transcript.md`)
+
+```markdown
+---
+granola_id: {{granola_id}}
+granola_url: {{granola_url}}
+title: "{{granola_title}} (Transcript)"
+date: {{granola_date}}
+type: transcript
+{{#granola_meeting_note}}
+meeting_note: "[[{{granola_meeting_note}}]]"
+{{/granola_meeting_note}}
+{{#granola_folders}}
+folders:
+{{granola_folders_linked_list}}
+{{/granola_folders}}
+tags:
+  - transcript
+  - granola
+---
 ## Transcript
 
 {{granola_transcript}}
-{{/granola_transcript}}
 ```
 
 ## Requirements

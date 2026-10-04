@@ -6,18 +6,26 @@ import {
 	getFolderBasePath,
 	resolveDatePattern,
 	resolveNotePath,
+	resolveTranscriptPath,
 	formatDuration,
 } from "./template";
-import type { MeetingData } from "./response-parser";
-import { moment } from "obsidian";
 import DEFAULT_TEMPLATE from "./default-template.md";
+import DEFAULT_TRANSCRIPT_TEMPLATE from "./default-transcript-template.md";
+import { type MeetingData, parseClockTime } from "./response-parser";
+import { moment } from "obsidian";
 
 function meeting(overrides: Partial<MeetingData> = {}): MeetingData {
+	const startMinutes =
+		overrides.startMinutes !== undefined
+			? overrides.startMinutes
+			: (overrides.startTime ? parseClockTime(overrides.startTime) : 15 * 60);
+
 	return {
 		id: "abc12345def",
 		title: "Weekly Sync",
 		date: "2026-03-03",
-		startMinutes: 15 * 60,
+		startTime: "3:00 PM",
+		startMinutes,
 		endMinutes: null,
 		durationMinutes: "",
 		created: "2026-03-03T15:00:00.000Z",
@@ -73,6 +81,33 @@ describe("applyTemplate", () => {
 		expect(applyTemplate("{{granola_attendees}}", m)).toBe("Alice, Bob");
 		expect(applyTemplate("{{granola_attendees_list}}", m)).toBe("  - Alice\n  - Bob");
 		expect(applyTemplate("{{granola_attendees_linked_list}}", m)).toBe('  - "[[Alice]]"\n  - "[[Bob]]"');
+	});
+
+	it("formats folder and multi-folder variables", () => {
+		const m = meeting({
+			folder: "Client Acme",
+			folders: ["Client Acme", "Q3 Launch"],
+		});
+		expect(applyTemplate("{{granola_folder}}", m)).toBe("Client Acme");
+		expect(applyTemplate("{{granolaFolder}}", m)).toBe("Client Acme");
+		expect(applyTemplate("{{folder}}", m)).toBe("Client Acme");
+		expect(applyTemplate("{{granola_folders}}", m)).toBe("Client Acme, Q3 Launch");
+		expect(applyTemplate("{{granola_folders_linked}}", m)).toBe("[[Client Acme]], [[Q3 Launch]]");
+		expect(applyTemplate("{{granola_folders_list}}", m)).toBe("  - Client Acme\n  - Q3 Launch");
+		expect(applyTemplate("{{granola_folders_linked_list}}", m)).toBe('  - "[[Client Acme]]"\n  - "[[Q3 Launch]]"');
+	});
+
+	it("supports conditional blocks on folder variables", () => {
+		const withFolders = meeting({ folders: ["Acme"] });
+		const withoutFolders = meeting({ folders: [] });
+
+		const tpl = "{{#granola_folder}}Folder: {{granola_folder}}{{/granola_folder}}";
+		expect(applyTemplate(tpl, withFolders)).toBe("Folder: Acme");
+		expect(applyTemplate(tpl, withoutFolders)).toBe("");
+
+		const tplMulti = "{{#granola_folders}}Folders: {{granola_folders}}{{/granola_folders}}";
+		expect(applyTemplate(tplMulti, withFolders)).toBe("Folders: Acme");
+		expect(applyTemplate(tplMulti, withoutFolders)).toBe("");
 	});
 });
 
@@ -244,6 +279,7 @@ describe("resolveNotePath", () => {
 	it("files a note under the folder pattern", () => {
 		expect(build("Meetings")).toEqual({
 			folder: "Meetings",
+			filename: "2026-03-03 Weekly Sync",
 			path: "Meetings/2026-03-03 Weekly Sync.md",
 		});
 	});
@@ -261,15 +297,218 @@ describe("resolveNotePath", () => {
 	it("expands date tokens into the folder, not the filename", () => {
 		expect(build("Meetings/{date:YYYY/MM}")).toEqual({
 			folder: "Meetings/2026/03",
+			filename: "2026-03-03 Weekly Sync",
 			path: "Meetings/2026/03/2026-03-03 Weekly Sync.md",
+		});
+	});
+
+	it("expands meeting_date and meeting_name tokens", () => {
+		const m = meeting({ title: "Client Pitch", date: "2026-05-12" });
+		expect(resolveNotePath("Notes/{meeting_date:YYYY}", "{meeting_date} - {meeting_name}", m)).toEqual({
+			folder: "Notes/2026",
+			filename: "2026-05-12 - Client Pitch",
+			path: "Notes/2026/2026-05-12 - Client Pitch.md",
+		});
+	});
+
+	it("expands granolaFolder when present", () => {
+		const m = meeting({ folder: "Clients/Acme Corp" });
+		expect(resolveNotePath("Meetings/{granolaFolder}/{date}", "{title}", m)).toEqual({
+			folder: "Meetings/Clients/Acme Corp/2026-03-03",
+			filename: "Weekly Sync",
+			path: "Meetings/Clients/Acme Corp/2026-03-03/Weekly Sync.md",
+		});
+	});
+
+	it("expands granola_folder and folder tokens identically to granolaFolder", () => {
+		const m = meeting({ folder: "Clients/Acme Corp" });
+		expect(resolveNotePath("Meetings/{granola_folder}", "{granola_folder} - {title}", m)).toEqual({
+			folder: "Meetings/Clients/Acme Corp",
+			filename: "Clients-Acme Corp - Weekly Sync",
+			path: "Meetings/Clients/Acme Corp/Clients-Acme Corp - Weekly Sync.md",
+		});
+		expect(resolveNotePath("Meetings/{folder}", "{folder} - {title}", m)).toEqual({
+			folder: "Meetings/Clients/Acme Corp",
+			filename: "Clients-Acme Corp - Weekly Sync",
+			path: "Meetings/Clients/Acme Corp/Clients-Acme Corp - Weekly Sync.md",
+		});
+	});
+
+	it("collapses slashes cleanly when granolaFolder is missing", () => {
+		const m = meeting({ folder: undefined });
+		expect(resolveNotePath("Meetings/{granolaFolder}/{date}", "{title}", m)).toEqual({
+			folder: "Meetings/2026-03-03",
+			filename: "Weekly Sync",
+			path: "Meetings/2026-03-03/Weekly Sync.md",
 		});
 	});
 
 	it("keeps an undated meeting in the base folder", () => {
 		expect(resolveNotePath("Meetings/{date:YYYY/MM}", "{title}", meeting({ date: "" }))).toEqual({
 			folder: "Meetings",
+			filename: "Weekly Sync",
 			path: "Meetings/Weekly Sync.md",
 		});
+	});
+});
+
+describe("resolveTranscriptPath", () => {
+	it("places transcript in subfolder using {meeting_folder}", () => {
+		const m = meeting();
+		const result = resolveTranscriptPath(
+			"{meeting_folder}/Transcripts",
+			"{filename} (Transcript)",
+			m,
+			"Meetings/2026/03",
+			"2026-03-03 Weekly Sync",
+		);
+		expect(result).toEqual({
+			folder: "Meetings/2026/03/Transcripts",
+			filename: "2026-03-03 Weekly Sync (Transcript)",
+			path: "Meetings/2026/03/Transcripts/2026-03-03 Weekly Sync (Transcript).md",
+		});
+	});
+
+	it("places transcript side-by-side with meeting note when folder is {meeting_folder}", () => {
+		const m = meeting();
+		const result = resolveTranscriptPath(
+			"{meeting_folder}",
+			"{meeting_filename} (Transcript)",
+			m,
+			"Meetings/2026/03",
+			"2026-03-03 Weekly Sync",
+		);
+		expect(result).toEqual({
+			folder: "Meetings/2026/03",
+			filename: "2026-03-03 Weekly Sync (Transcript)",
+			path: "Meetings/2026/03/2026-03-03 Weekly Sync (Transcript).md",
+		});
+	});
+
+	it("places transcript in a fixed folder", () => {
+		const m = meeting();
+		const result = resolveTranscriptPath(
+			"Transcripts",
+			"{date} {title} (Transcript)",
+			m,
+			"Meetings",
+			"2026-03-03 Weekly Sync",
+		);
+		expect(result).toEqual({
+			folder: "Transcripts",
+			filename: "2026-03-03 Weekly Sync (Transcript)",
+			path: "Transcripts/2026-03-03 Weekly Sync (Transcript).md",
+		});
+	});
+});
+
+describe("applyTemplate with extraVariables and bidirectional links", () => {
+	it("provides bidirectional link variables for meeting and transcript notes", () => {
+		const m = meeting({ folder: "General" });
+		const tpl = [
+			"meeting: {{granola_meeting_note}}",
+			"meeting_link: {{granola_meeting_link}}",
+			"transcript: {{granola_meeting_transcript}}",
+			"transcript_link: {{granola_meeting_transcript_link}}",
+			"folder: {{granola_folder}}",
+		].join("\n");
+
+		const result = applyTemplate(tpl, m, new Map(), {
+			granola_meeting_note: "2026-03-03 Weekly Sync",
+			granola_meeting_transcript: "2026-03-03 Weekly Sync (Transcript)",
+		});
+
+		expect(result).toContain("meeting: 2026-03-03 Weekly Sync");
+		expect(result).toContain("meeting_link: [[2026-03-03 Weekly Sync]]");
+		expect(result).toContain("transcript: 2026-03-03 Weekly Sync (Transcript)");
+		expect(result).toContain("transcript_link: [[2026-03-03 Weekly Sync (Transcript)]]");
+		expect(result).toContain("folder: General");
+	});
+
+	it("routes and renders meeting and transcript notes with correct date for September 6 meeting", () => {
+		const m = meeting({
+			title: "Family Meeting",
+			date: "2026-09-06",
+			startTime: "11:16 AM",
+		});
+
+		const notePath = resolveNotePath("Meetings", "{date} {title}", m);
+		expect(notePath.filename).toBe("2026-09-06 Family Meeting");
+		expect(notePath.path).toBe("Meetings/2026-09-06 Family Meeting.md");
+
+		const transcriptPath = resolveTranscriptPath(
+			"{meeting_folder}/Transcripts",
+			"{filename} (Transcript)",
+			m,
+			notePath.folder,
+			notePath.filename,
+		);
+		expect(transcriptPath.filename).toBe("2026-09-06 Family Meeting (Transcript)");
+		expect(transcriptPath.path).toBe("Meetings/Transcripts/2026-09-06 Family Meeting (Transcript).md");
+
+		const tpl = [
+			"title: \"{{granola_title}}\"",
+			"date: {{granola_date}}",
+			"start_time: {{granola_start_time}}",
+			"transcript: \"[[{{granola_meeting_transcript}}]]\"",
+		].join("\n");
+
+		const rendered = applyTemplate(tpl, m, new Map(), {
+			granola_meeting_transcript: transcriptPath.filename,
+		});
+
+		expect(rendered).toContain('title: "Family Meeting"');
+		expect(rendered).toContain("date: 2026-09-06");
+		expect(rendered).toContain("start_time: 11:16 AM");
+		expect(rendered).toContain('transcript: "[[2026-09-06 Family Meeting (Transcript)]]"');
+	});
+});
+
+describe("default templates rendering with folders", () => {
+	it("renders folders property in DEFAULT_TEMPLATE when folders are present", () => {
+		const m = meeting({
+			folders: ["Client Acme", "Q3 Launch"],
+			participants: [{ name: "Alice", email: "a@example.com", organization: "", isCreator: false }],
+		});
+
+		const rendered = applyTemplate(DEFAULT_TEMPLATE, m).replace(/\r\n/g, "\n");
+		expect(rendered).toContain('folders:\n  - "[[Client Acme]]"\n  - "[[Q3 Launch]]"');
+		expect(rendered).toContain('attendees:\n  - "[[Alice]]"');
+		expect(rendered).toContain("type: meeting");
+	});
+
+	it("omits folders property completely in DEFAULT_TEMPLATE when no folders exist", () => {
+		const m = meeting({
+			folders: [],
+			folder: undefined,
+			participants: [{ name: "Alice", email: "a@example.com", organization: "", isCreator: false }],
+		});
+
+		const rendered = applyTemplate(DEFAULT_TEMPLATE, m).replace(/\r\n/g, "\n");
+		expect(rendered).not.toContain("folders:");
+		expect(rendered).toContain('attendees:\n  - "[[Alice]]"');
+	});
+
+	it("renders folders property in DEFAULT_TRANSCRIPT_TEMPLATE when folders are present", () => {
+		const m = meeting({
+			folders: ["Client Acme"],
+			transcript: "hello",
+		});
+
+		const rendered = applyTemplate(DEFAULT_TRANSCRIPT_TEMPLATE, m).replace(/\r\n/g, "\n");
+		expect(rendered).toContain('folders:\n  - "[[Client Acme]]"');
+		expect(rendered).toContain("type: transcript");
+	});
+
+	it("omits folders property in DEFAULT_TRANSCRIPT_TEMPLATE when no folders exist", () => {
+		const m = meeting({
+			folders: [],
+			folder: undefined,
+			transcript: "hello",
+		});
+
+		const rendered = applyTemplate(DEFAULT_TRANSCRIPT_TEMPLATE, m).replace(/\r\n/g, "\n");
+		expect(rendered).not.toContain("folders:");
 	});
 });
 
@@ -310,12 +549,12 @@ describe("default template timing line", () => {
 	});
 
 	it("renders the timing line directly under the Summary heading", () => {
-		const body = applyTemplate(DEFAULT_TEMPLATE, synced);
+		const body = applyTemplate(DEFAULT_TEMPLATE, synced).replace(/\r\n/g, "\n");
 		expect(body).toContain("## Summary\n\n2:00 PM-2:41 PM (41m)\n\n- a point");
 	});
 
 	it("omits the line entirely when the length is unknown", () => {
-		const body = applyTemplate(DEFAULT_TEMPLATE, meeting({ enhancedNotes: "- a point" }));
+		const body = applyTemplate(DEFAULT_TEMPLATE, meeting({ enhancedNotes: "- a point" })).replace(/\r\n/g, "\n");
 		expect(body).toContain("## Summary\n\n- a point");
 		expect(body).not.toContain("minutes");
 		expect(body).not.toContain("{{");
