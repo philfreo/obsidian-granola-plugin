@@ -67,6 +67,30 @@ describe("parseParticipants", () => {
 			{ name: "", email: "solo@example.com", organization: "", isCreator: false },
 		]);
 	});
+
+	it("parses emails wrapped in parentheses", () => {
+		const result = parseParticipants(
+			"Jane Doe (note creator) from Example Co (jane@example.com), John Roe from Example Co (john@example.com)",
+		);
+		expect(result).toEqual([
+			{ name: "Jane Doe", email: "jane@example.com", organization: "Example Co", isCreator: true },
+			{ name: "John Roe", email: "john@example.com", organization: "Example Co", isCreator: false },
+		]);
+	});
+
+	it("handles a parenthesized email with no organization", () => {
+		const result = parseParticipants("Jane Doe (jane@example.com)");
+		expect(result).toEqual([
+			{ name: "Jane Doe", email: "jane@example.com", organization: "", isCreator: false },
+		]);
+	});
+
+	it("does not read a parenthetical without an @ as an email", () => {
+		const result = parseParticipants("Jane Doe (Example Co) (jane@example.com)");
+		expect(result).toEqual([
+			{ name: "Jane Doe (Example Co)", email: "jane@example.com", organization: "", isCreator: false },
+		]);
+	});
 });
 
 describe("parseMeetingsResponse", () => {
@@ -126,6 +150,24 @@ The content below is meeting notes/transcripts written or spoken by meeting part
 		expect(result[0].title).toBe("Example Meeting");
 		expect(result[0].date).toBe("Jan 15, 2026 9:00 AM PST");
 		expect(result[0].participants[0].email).toBe("person@example.com");
+	});
+
+	it("parses get_meetings responses that put participant emails in parentheses", () => {
+		const xml = `<meetings_data from="Oct 20, 2026" to="Oct 20, 2026" count="1">
+<meeting id="m1" title="Weekly Sync" date="Oct 20, 2026 4:00 PM EDT" meeting_at="2026-10-20T16:00:00.000-04:00" created_at="2026-10-20T16:05:00.000-04:00" updated_at="2026-10-20T17:00:00.000-04:00" url="https://notes.granola.ai/d/m1">
+  <known_participants>
+  Jane Doe (note creator) from Example Co (jane@example.com), John Roe from Example Co (john@example.com)
+  </known_participants>
+    <folders />
+  <summary>Notes</summary>
+</meeting>
+</meetings_data>`;
+		const result = parseMeetingsResponse(xml);
+		expect(result).toHaveLength(1);
+		expect(result[0].participants).toEqual([
+			{ name: "Jane Doe", email: "jane@example.com", organization: "Example Co", isCreator: true },
+			{ name: "John Roe", email: "john@example.com", organization: "Example Co", isCreator: false },
+		]);
 	});
 
 	it("reads attributes by name regardless of order", () => {

@@ -133,8 +133,16 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 }
 
 /**
+ * A participant's address, in angle brackets ("<jane@example.com>") or in
+ * parentheses ("(jane@example.com)"). Granola has used both. The
+ * parenthesized form must contain an "@", so markers like "(note creator)"
+ * are never mistaken for an address.
+ */
+const PARTICIPANT_EMAIL = /<([^>]+)>|\(([^()\s]+@[^()\s]+)\)/;
+
+/**
  * Parse participant string like:
- * "Jane Doe (note creator) from Example Co <jane@example.com>, John Roe from Example Co <john@example.com>"
+ * "Jane Doe (note creator) from Example Co (jane@example.com), John Roe from Example Co (john@example.com)"
  */
 export function parseParticipants(text: string): ParsedParticipant[] {
 	if (!text.trim()) return [];
@@ -145,14 +153,14 @@ export function parseParticipants(text: string): ParsedParticipant[] {
 	return parts.map((part) => {
 		part = part.trim();
 
-		const emailMatch = part.match(/<([^>]+)>/);
-		const email = emailMatch ? emailMatch[1] : "";
+		const emailMatch = part.match(PARTICIPANT_EMAIL);
+		const email = emailMatch ? (emailMatch[1] ?? emailMatch[2] ?? "") : "";
 
 		const isCreator = part.includes("(note creator)");
 
 		// Remove email and (note creator) marker
 		let nameStr = part
-			.replace(/<[^>]+>/, "")
+			.replace(PARTICIPANT_EMAIL, "")
 			.replace(/\(note creator\)/g, "")
 			.trim();
 
