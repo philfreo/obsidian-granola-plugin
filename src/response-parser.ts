@@ -140,15 +140,23 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
  */
 const PARTICIPANT_EMAIL = /<([^>]+)>|\(([^()\s]+@[^()\s]+)\)/;
 
+/** A comma directly after a participant's address, where the next participant begins. */
+const AFTER_PARTICIPANT_EMAIL = /(?<=<[^>]+>|\([^()\s]+@[^()\s]+\)),\s*/;
+
 /**
  * Parse participant string like:
  * "Jane Doe (note creator) from Example Co (jane@example.com), John Roe from Example Co (john@example.com)"
+ *
+ * Display names can contain commas themselves ("Doe, Jane"), so the list is
+ * split after each address rather than at every comma. Only a stretch with no
+ * address at all falls back to splitting at a comma before a capital letter.
  */
 export function parseParticipants(text: string): ParsedParticipant[] {
 	if (!text.trim()) return [];
 
-	// Split by comma followed by a space and uppercase letter (start of next name)
-	const parts = text.split(/,\s*(?=[A-Z])/);
+	const parts = text
+		.split(AFTER_PARTICIPANT_EMAIL)
+		.flatMap((chunk) => (PARTICIPANT_EMAIL.test(chunk) ? [chunk] : chunk.split(/,\s*(?=[A-Z])/)));
 
 	return parts.map((part) => {
 		part = part.trim();

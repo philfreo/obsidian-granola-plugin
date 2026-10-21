@@ -85,6 +85,29 @@ describe("parseParticipants", () => {
 		]);
 	});
 
+	it("keeps a comma inside a display name within one participant", () => {
+		const result = parseParticipants(
+			"Doe, Jane (note creator) from Example Co (jane@example.com), Roe, John from Example Co (john@example.com)",
+		);
+		expect(result).toEqual([
+			{ name: "Doe, Jane", email: "jane@example.com", organization: "Example Co", isCreator: true },
+			{ name: "Roe, John", email: "john@example.com", organization: "Example Co", isCreator: false },
+		]);
+	});
+
+	it("keeps a comma inside a display name with angle-bracket emails", () => {
+		const result = parseParticipants("Doe, Jane <jane@example.com>, Roe, John <john@example.com>");
+		expect(result.map((p) => [p.name, p.email])).toEqual([
+			["Doe, Jane", "jane@example.com"],
+			["Roe, John", "john@example.com"],
+		]);
+	});
+
+	it("falls back to splitting at commas when participants have no emails", () => {
+		const result = parseParticipants("Jane Doe, John Roe");
+		expect(result.map((p) => p.name)).toEqual(["Jane Doe", "John Roe"]);
+	});
+
 	it("does not read a parenthetical without an @ as an email", () => {
 		const result = parseParticipants("Jane Doe (Example Co) (jane@example.com)");
 		expect(result).toEqual([
