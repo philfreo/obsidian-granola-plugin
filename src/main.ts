@@ -323,7 +323,12 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 
 		// Load accounts, migrating a legacy single-account connection if present.
-		this.accounts = this.pluginData.accounts ?? [];
+		//
+		// An account saved without tokens is a login that never came back from
+		// the browser. The verifier that login needs was held only in memory, so
+		// it can no longer finish, and settings never lists a tokenless account,
+		// so nothing else would ever remove it.
+		this.accounts = (this.pluginData.accounts ?? []).filter((a) => a.oauthTokens !== undefined);
 		if (this.accounts.length === 0 && this.pluginData.oauthTokens) {
 			this.accounts = [
 				{
