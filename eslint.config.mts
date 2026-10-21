@@ -42,6 +42,7 @@ export default tseslint.config(
 		},
 	},
 	globalIgnores([
+		".claude",
 		"node_modules",
 		"dist",
 		"release",
