@@ -58,11 +58,14 @@ To sync more than one Granola account, click **Add Granola account** in settings
 | Folder path | `Meetings` | Where to save meeting notes. Takes date tokens, so `Meetings/{date:YYYY/MM}` files each meeting under its own month |
 | Filename pattern | `{date} {title}` | Pattern for filenames. Supports `{date}`, `{date:YYYY-MM-DD}`, `{title}`, `{id}` |
 | Template path | `Templates/Granola.md` | Path to your template file |
+| Update template | | Replace your template with the plugin's current default, to pick up sections added since it was written. Asks first, since any changes you made to it are lost |
 | Show ribbon icon | On | Show a sync button in the left sidebar |
 | Skip existing notes | On | Don't overwrite notes you've edited. Existing notes are matched by `granola_id` anywhere in your vault, not just the sync folder, so notes you've moved aren't duplicated |
 | Granola API key | empty | Optional `grn_…` key enabling meeting length and end time. Create it in the Granola desktop app under Settings > Connectors > API keys; needs a Business or Enterprise plan. Stored unencrypted in your vault |
 | Duration format | Compact | How `{{granola_duration_formatted}}` is written: Compact (1h 14m), Long (1 hour 14 minutes), or Minutes only (74 minutes) |
 | Include transcripts | Off | Add the full meeting transcript to each note |
+| Download images | On | Save screenshots of shared screens, and photos attached in Granola, into your vault. Show them in notes with `{{granola_images}}` |
+| Image folder | `./Attachments` | Where downloaded images go, each meeting in its own subfolder named after its note. A path starting with `./` is inside the note's folder; anything else is from the vault root |
 | Exclude yourself from attendees | On | Leave your own Granola account out of the attendee list |
 | Match attendees by email | On | Link attendees to notes with matching email in frontmatter |
 
@@ -125,8 +128,11 @@ For any wording the three styles don't cover, build your own from
 
 ### Content
 - `{{granola_private_notes}}` - Your notes from the meeting
-- `{{granola_enhanced_notes}}` - AI-generated content (Summary, Action Items, etc.)
+- `{{granola_enhanced_notes}}` - AI-generated content (Summary, Action Items, etc.), with its headings starting at `###` so they nest under a `##` heading
 - `{{granola_transcript}}` - Full transcript (requires "Include transcripts" enabled)
+- `{{granola_images}}` - Screenshots and photos from the meeting, embedded one per paragraph (requires "Download images" enabled)
+
+When Granola captures your shared screen it keeps screenshots of it, and you can attach photos to a note by hand. With "Download images" on, each one is saved into the vault once, named by its Granola id, and found again by that name wherever you move it, so a later sync never downloads it twice. A template written before this variable existed won't show them: add the block from the default template below, or use **Update template** in settings to switch to the latest default.
 
 ### Attendees
 - `{{granola_attendees}}` - Comma-separated names
@@ -172,7 +178,10 @@ tags:
 
 {{/granola_duration_formatted}}{{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
-{{#granola_transcript}}
+{{#granola_images}}## Images
+
+{{granola_images}}
+{{/granola_images}}{{#granola_transcript}}
 
 ## Transcript
 

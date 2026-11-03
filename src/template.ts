@@ -23,6 +23,25 @@ export async function loadTemplate(app: App, templatePath: string): Promise<stri
 	return DEFAULT_TEMPLATE;
 }
 
+/**
+ * Whether the template file already holds the bundled default, leaving nothing
+ * to update. A missing file does not.
+ */
+export async function isDefaultTemplate(app: App, templatePath: string): Promise<boolean> {
+	const file = app.vault.getAbstractFileByPath(normalizePath(templatePath));
+	return file instanceof TFile && (await app.vault.read(file)) === DEFAULT_TEMPLATE;
+}
+
+/** Overwrite the template with the bundled default, creating it if it is missing. */
+export async function resetTemplate(app: App, templatePath: string): Promise<void> {
+	const file = app.vault.getAbstractFileByPath(normalizePath(templatePath));
+	if (file instanceof TFile) {
+		await app.vault.modify(file, DEFAULT_TEMPLATE);
+	} else {
+		await loadTemplate(app, templatePath);
+	}
+}
+
 function resolveParticipantName(
 	participant: ParsedParticipant,
 	emailToNoteTitle: Map<string, string>,
@@ -73,6 +92,8 @@ export function applyTemplate(
 		),
 		granola_start_time: formatClockTime(meeting.startMinutes),
 		granola_end_time: formatClockTime(meeting.endMinutes),
+		// A paragraph per image, so they stack rather than sitting side by side.
+		granola_images: meeting.images.map((name) => `![[${name}]]`).join("\n\n"),
 	};
 
 	const result = renderConditionals(template, variables);

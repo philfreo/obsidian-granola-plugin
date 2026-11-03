@@ -19,7 +19,10 @@ tags:
 
 {{/granola_duration_formatted}}{{granola_enhanced_notes}}
 {{/granola_enhanced_notes}}
-{{#granola_transcript}}
+{{#granola_images}}## Images
+
+{{granola_images}}
+{{/granola_images}}{{#granola_transcript}}
 
 ## Transcript
 

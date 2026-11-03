@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, normalizePath } from "obsidian";
+import { Notice, Plugin, TFile, base64ToArrayBuffer, normalizePath } from "obsidian";
 import type { OAuthTokens, OAuthClientInformationMixed } from "@modelcontextprotocol/sdk/shared/auth.js";
 import {
 	GranolaSyncSettings,
@@ -19,6 +19,7 @@ import {
 	excludeSelf,
 } from "./response-parser";
 import { loadTemplate, applyTemplate, getFolderBasePath, resolveNotePath } from "./template";
+import { imageExtension, indexSyncedImages, isAttachmentId, resolveImageFolder } from "./images";
 
 export interface GranolaAccount {
 	id: string;
@@ -485,6 +486,12 @@ export default class GranolaSyncPlugin extends Plugin {
 			filenamePattern,
 			existingDocs,
 			emailToNoteTitle,
+			imageFolder: this.settings.downloadImages
+				? this.settings.imageFolder.trim() || DEFAULT_SETTINGS.imageFolder
+				: null,
+			syncedImages: this.settings.downloadImages
+				? indexSyncedImages(this.app.vault.getFiles())
+				: new Map<string, TFile>(),
 		};
 
 		let created = 0;
@@ -606,15 +613,32 @@ export default class GranolaSyncPlugin extends Plugin {
 		}
 
 		// Batch fetch meeting details (max 10 per API call)
+		const attachments = ctx.imageFolder === null ? "none" : "list";
 		const idsToFetch = meetingsToSync.map((m) => m.id);
 		const allDetails = [];
 		for (let i = 0; i < idsToFetch.length; i += 10) {
 			const batch = idsToFetch.slice(i, i + 10);
 			try {
-				const detailsResponse = await mcp.getMeetings(batch);
+				const detailsResponse = await mcp.getMeetings(batch, attachments);
 				allDetails.push(...parseMeetingsResponse(detailsResponse));
 			} catch (error) {
 				console.error("Granola: getMeetings batch failed", error);
+			}
+		}
+
+		// Asked about several meetings at once, get_meetings lists only the
+		// first 20 attachments of each. A meeting listed with more than came
+		// back is asked about on its own, which lists every one.
+		if (attachments === "list") {
+			const listedCounts = new Map(meetingsToSync.map((m) => [m.id, m.attachmentCount]));
+			for (const [index, details] of allDetails.entries()) {
+				if ((listedCounts.get(details.id) ?? 0) <= details.attachmentIds.length) continue;
+				try {
+					const [complete] = parseMeetingsResponse(await mcp.getMeetings([details.id], "list"));
+					if (complete) allDetails[index] = complete;
+				} catch (error) {
+					console.error(`Granola: attachment list failed for ${details.id}`, error);
+				}
 			}
 		}
 
@@ -624,7 +648,7 @@ export default class GranolaSyncPlugin extends Plugin {
 		for (const details of allDetails) {
 			try {
 				// Skip meetings still in progress (no summary generated yet)
-				if (!details.summary.trim() || details.summary.trim() === "No summary") {
+				if (!details.summary) {
 					continue;
 				}
 
@@ -679,23 +703,36 @@ export default class GranolaSyncPlugin extends Plugin {
 				if (this.settings.excludeSelfFromAttendees && account.email) {
 					meetingData.participants = excludeSelf(meetingData.participants, account.email);
 				}
+
+				const existingFile = ctx.existingDocs.get(details.id);
+				// Resolved before rendering, because the images are filed
+				// beside wherever the note lives.
+				const { folder, path } = existingFile
+					? { folder: existingFile.parent?.path ?? "/", path: existingFile.path }
+					: resolveNotePath(ctx.folderPathPattern, ctx.filenamePattern, meetingData);
+
+				if (ctx.imageFolder !== null && details.attachmentIds.length > 0) {
+					const noteName = path.slice(path.lastIndexOf("/") + 1).replace(/\.md$/, "");
+					meetingData.images = await this.syncImages(
+						mcp,
+						details.id,
+						details.attachmentIds,
+						resolveImageFolder(ctx.imageFolder, folder, noteName),
+						ctx.syncedImages,
+					);
+				}
+
 				const content = applyTemplate(
 					ctx.template,
 					meetingData,
 					ctx.emailToNoteTitle,
 					this.settings.durationStyle,
 				);
-				const existingFile = ctx.existingDocs.get(details.id);
 
 				if (existingFile) {
 					await this.app.vault.modify(existingFile, content);
 					updated++;
 				} else {
-					const { folder, path } = resolveNotePath(
-						ctx.folderPathPattern,
-						ctx.filenamePattern,
-						meetingData,
-					);
 					await this.ensureFolderExists(folder);
 					const newFile = await this.app.vault.create(path, content);
 					// Track so a meeting shared across accounts isn't created twice this run.
@@ -709,6 +746,50 @@ export default class GranolaSyncPlugin extends Plugin {
 
 		return { created, updated, skipped };
 	}
+
+	/**
+	 * Make sure each of a meeting's images is in the vault, downloading only
+	 * the ones no earlier sync saved, and return their filenames in order.
+	 *
+	 * Images are fetched one by one, and one that fails is left out of the
+	 * note rather than holding the note back, the same way a transcript that
+	 * fails to load is. The failure is logged; a later sync that rewrites the
+	 * note tries it again.
+	 */
+	private async syncImages(
+		mcp: GranolaMcpClient,
+		meetingId: string,
+		attachmentIds: string[],
+		folder: string,
+		syncedImages: Map<string, TFile>,
+	): Promise<string[]> {
+		const names: string[] = [];
+		for (const attachmentId of attachmentIds) {
+			if (!isAttachmentId(attachmentId)) {
+				console.warn(`Granola: skipping image with unexpected id ${attachmentId}`);
+				continue;
+			}
+			const key = attachmentId.toLowerCase();
+			let file = syncedImages.get(key);
+			if (!file) {
+				try {
+					const image = await mcp.getAttachmentImage(meetingId, attachmentId);
+					await this.ensureFolderExists(folder);
+					file = await this.app.vault.createBinary(
+						normalizePath(`${folder}/${key}.${imageExtension(image.mimeType)}`),
+						base64ToArrayBuffer(image.data),
+					);
+					// A meeting shared across accounts is synced twice in one run.
+					syncedImages.set(key, file);
+				} catch (error) {
+					console.error(`Granola: image ${attachmentId} failed for ${meetingId}`, error);
+					continue;
+				}
+			}
+			names.push(file.name);
+		}
+		return names;
+	}
 }
 
 interface SyncContext {
@@ -717,6 +798,10 @@ interface SyncContext {
 	filenamePattern: string;
 	existingDocs: Map<string, TFile>;
 	emailToNoteTitle: Map<string, string>;
+	/** The image folder setting, or null when images are not being downloaded. */
+	imageFolder: string | null;
+	/** Images already in the vault, by attachment id. */
+	syncedImages: Map<string, TFile>;
 }
 
 interface SyncResult {

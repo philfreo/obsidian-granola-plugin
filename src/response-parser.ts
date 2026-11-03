@@ -14,11 +14,15 @@ export interface ParsedMeeting {
 	/** Granola's own link to the note; "" when the response omits it. */
 	url: string;
 	participants: ParsedParticipant[];
+	/** Images Granola holds for the meeting, from list_meetings; 0 when absent. */
+	attachmentCount: number;
 }
 
 export interface ParsedMeetingDetails extends ParsedMeeting {
 	privateNotes: string;
 	summary: string; // already markdown
+	/** Screenshots of a shared screen, then photos attached by hand; from get_meetings. */
+	attachmentIds: string[];
 }
 
 export interface MeetingData {
@@ -36,6 +40,8 @@ export interface MeetingData {
 	enhancedNotes: string;
 	transcript: string;
 	participants: ParsedParticipant[];
+	/** Vault filenames of the meeting's downloaded images, in Granola's order. */
+	images: string[];
 }
 
 /**
@@ -48,6 +54,39 @@ export interface MeetingData {
 export function normalizeTaskItems(markdown: string): string {
 	if (!markdown) return markdown;
 	return markdown.replace(/^([ \t]*)(\[[ xX]\]\s)/gm, "$1- $2");
+}
+
+/** The level a summary's top headings are written at: one below `## Summary`. */
+const SUMMARY_TOP_HEADING = 3;
+
+/**
+ * Granola used to start a summary's sections at `###`, nested under the
+ * template's `## Summary`. It now starts them at `#`, which outranks that
+ * heading and flattens the note's outline. Every heading is pushed down by the
+ * same amount, so the top ones are `###` again and the rest keep their places
+ * beneath them, capped at `######`, the deepest heading markdown has. A
+ * summary already at `###` or deeper is left as it is, as are lines inside
+ * fenced code blocks.
+ */
+export function nestSummaryHeadings(markdown: string): string {
+	const lines = markdown.split("\n");
+	let inFence = false;
+	const levels = lines.map((line) => {
+		if (/^ {0,3}(?:```|~~~)/.test(line)) {
+			inFence = !inFence;
+			return 0;
+		}
+		return inFence ? 0 : (line.match(/^(#{1,6})(?:[ \t]|$)/)?.[1].length ?? 0);
+	});
+
+	const shift = SUMMARY_TOP_HEADING - Math.min(...levels.filter((level) => level > 0));
+	if (!(shift > 0)) return markdown;
+
+	return lines
+		.map((line, i) =>
+			levels[i] ? "#".repeat(Math.min(levels[i] + shift, 6)) + line.slice(levels[i]) : line,
+		)
+		.join("\n");
 }
 
 /**
@@ -84,6 +123,18 @@ function attr(openTag: string, name: string): string {
 	const match = openTag.match(new RegExp(`(?:^|\\s)${name}="([^"]*)"`));
 	return match ? decodeXmlEntities(match[1]) : "";
 }
+
+/**
+ * What Granola puts in `<summary>` for a meeting that has no AI summary,
+ * instead of leaving the element out: a bare "No summary", or one line of its
+ * own wording such as "No summary. This note is empty: it has no notes and no
+ * AI summary has been generated for it." or "No AI summary has been generated
+ * for this meeting, but it has a transcript. …". The wording varies, so only
+ * the shared phrase is matched, and only when it is the whole summary on a
+ * single line. Parsed as an empty summary, so sync skips the meeting until
+ * Granola has summarized it.
+ */
+const NO_SUMMARY = /^(?:No summary\.?|[^\n]*\bno AI summary has been generated\b[^\n]*)$/i;
 
 /**
  * Parse the XML-ish list_meetings / get_meetings response into meeting objects.
@@ -124,12 +175,44 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		const privateNotes = notesMatch ? normalizeTaskItems(decodeXmlEntities(notesMatch[1].trim())) : "";
 
 		const summaryMatch = body.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/);
-		const summary = summaryMatch ? normalizeTaskItems(decodeXmlEntities(summaryMatch[1].trim())) : "";
+		const summaryText = summaryMatch ? decodeXmlEntities(summaryMatch[1].trim()) : "";
+		const summary = NO_SUMMARY.test(summaryText) ? "" : nestSummaryHeadings(normalizeTaskItems(summaryText));
 
-		meetings.push({ id, title, date, url, participants, privateNotes, summary });
+		const attachmentCount = parseInt(attr(openTag, "attachment_count"), 10) || 0;
+		const attachmentIds = parseAttachmentIds(body);
+
+		meetings.push({
+			id,
+			title,
+			date,
+			url,
+			participants,
+			privateNotes,
+			summary,
+			attachmentCount,
+			attachmentIds,
+		});
 	}
 
 	return meetings;
+}
+
+/**
+ * The ids in a meeting's `<attachments>` element, in the order Granola lists
+ * them. Screenshots carry a description as their text and photos arrive with
+ * none, so both the paired and the self-closing tag are accepted. Only that
+ * element is read, so a summary quoting an `<attachment>` tag cannot add one.
+ */
+function parseAttachmentIds(meetingBody: string): string[] {
+	const block = meetingBody.match(/<attachments(?:\s[^>]*)?>([\s\S]*?)<\/attachments>/);
+	if (!block) return [];
+
+	const ids: string[] = [];
+	for (const [, openTag] of block[1].matchAll(/<attachment\s+((?:"[^"]*"|[^>"])*?)\/?>/g)) {
+		const id = attr(openTag, "id");
+		if (id) ids.push(id);
+	}
+	return ids;
 }
 
 /**
@@ -406,5 +489,6 @@ export function buildMeetingData(
 		enhancedNotes: details.summary,
 		transcript: formatTranscriptText(transcript),
 		participants: details.participants,
+		images: [],
 	};
 }

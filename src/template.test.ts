@@ -26,6 +26,7 @@ function meeting(overrides: Partial<MeetingData> = {}): MeetingData {
 		enhancedNotes: "",
 		transcript: "",
 		participants: [],
+		images: [],
 		...overrides,
 	};
 }
@@ -435,5 +436,37 @@ describe("the retired granola_duration name", () => {
 		const m = meeting({ durationMinutes: "74" });
 		expect(applyTemplate("{{granola_duration}}", m)).toBe("");
 		expect(applyTemplate("{{#granola_duration}}x{{/granola_duration}}", m)).toBe("");
+	});
+});
+
+describe("images", () => {
+	const A = "11111111-1111-4111-8111-111111111111.png";
+	const B = "22222222-2222-4222-8222-222222222222.jpg";
+
+	it("embeds each image in its own paragraph", () => {
+		expect(applyTemplate("{{granola_images}}", meeting({ images: [A, B] }))).toBe(
+			`![[${A}]]\n\n![[${B}]]`,
+		);
+	});
+
+	it("renders nothing for a meeting without images", () => {
+		expect(applyTemplate("{{#granola_images}}x{{/granola_images}}", meeting())).toBe("");
+	});
+
+	it("puts images between the summary and the transcript in the default template", () => {
+		const body = applyTemplate(
+			DEFAULT_TEMPLATE,
+			meeting({ enhancedNotes: "- a point", images: [A], transcript: "**Me:** hi" }),
+		);
+		expect(body).toContain(`- a point\n\n## Images\n\n![[${A}]]\n\n\n## Transcript`);
+	});
+
+	it("leaves the default template's output unchanged when there are none", () => {
+		const withoutBlock = DEFAULT_TEMPLATE.replace(
+			/\{\{#granola_images\}\}[\s\S]*?\{\{\/granola_images\}\}/,
+			"",
+		);
+		const synced = meeting({ enhancedNotes: "- a point", transcript: "**Me:** hi" });
+		expect(applyTemplate(DEFAULT_TEMPLATE, synced)).toBe(applyTemplate(withoutBlock, synced));
 	});
 });

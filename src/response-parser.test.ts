@@ -9,6 +9,7 @@ import {
 	buildMeetingData,
 	parseClockTime,
 	normalizeTaskItems,
+	nestSummaryHeadings,
 	decodeXmlEntities,
 	excludeSelf,
 } from "./response-parser";
@@ -138,7 +139,7 @@ describe("parseMeetingsResponse", () => {
 		expect(result[0].title).toBe("Weekly Sync");
 		expect(result[0].date).toBe("Mar 3, 2026 3:00 PM");
 		expect(result[0].privateNotes).toBe("my private thoughts");
-		expect(result[0].summary).toBe("## Recap\nWe discussed things.");
+		expect(result[0].summary).toBe("### Recap\nWe discussed things.");
 		expect(result[0].participants).toHaveLength(1);
 		expect(result[0].participants[0].email).toBe("jane@example.com");
 	});
@@ -153,6 +154,25 @@ describe("parseMeetingsResponse", () => {
 		expect(result[0].summary).toBe("");
 		expect(result[0].participants).toEqual([]);
 		expect(result[1].summary).toBe("Done");
+	});
+
+	it("treats Granola's no-summary placeholder as no summary", () => {
+		const xml = `
+			<meeting id="m1" title="Empty" date="Mar 1, 2026 9:00 AM"><summary>
+No summary. This note is empty: it has no notes and no AI summary has been generated for it.
+</summary></meeting>
+			<meeting id="m2" title="Transcript only" date="Mar 2, 2026 10:00 AM"><summary>
+No AI summary has been generated for this meeting, but it has a transcript. Read it with get_meeting_transcript.
+</summary></meeting>
+			<meeting id="m3" title="Older wording" date="Mar 3, 2026 11:00 AM"><summary>No summary</summary></meeting>
+		`;
+		expect(parseMeetingsResponse(xml).map((m) => m.summary)).toEqual(["", "", ""]);
+	});
+
+	it("keeps a real summary that mentions the placeholder wording", () => {
+		const summary = "### Recap\n- No AI summary has been generated for the old meetings yet";
+		const xml = `<meeting id="m1" title="T" date="Mar 1, 2026 9:00 AM"><summary>${summary}</summary></meeting>`;
+		expect(parseMeetingsResponse(xml)[0].summary).toBe(summary);
 	});
 
 	it("parses list_meetings tags that carry the newer involvement attributes", () => {
@@ -287,6 +307,34 @@ describe("normalizeTaskItems", () => {
 
 	it("returns empty input unchanged", () => {
 		expect(normalizeTaskItems("")).toBe("");
+	});
+});
+
+describe("nestSummaryHeadings", () => {
+	it("pushes top-level headings down to ### and keeps the levels beneath them", () => {
+		const input = "# Budget\n\n- point\n\n## Detail\n\n# Next Steps\n\n- **Do it** (Jane)";
+		const expected = "### Budget\n\n- point\n\n#### Detail\n\n### Next Steps\n\n- **Do it** (Jane)";
+		expect(nestSummaryHeadings(input)).toBe(expected);
+	});
+
+	it("leaves a summary that already starts at ### alone", () => {
+		const input = "### Budget\n- point\n#### Detail";
+		expect(nestSummaryHeadings(input)).toBe(input);
+	});
+
+	it("caps headings at ######", () => {
+		expect(nestSummaryHeadings("# A\n##### B\n###### C")).toBe("### A\n###### B\n###### C");
+	});
+
+	it("ignores lines that only look like headings", () => {
+		const input = "# Setup\n```bash\n# install\nnpm ci\n```\n#hashtag and #1 priority";
+		const expected = "### Setup\n```bash\n# install\nnpm ci\n```\n#hashtag and #1 priority";
+		expect(nestSummaryHeadings(input)).toBe(expected);
+	});
+
+	it("returns a summary without headings unchanged", () => {
+		expect(nestSummaryHeadings("- a point")).toBe("- a point");
+		expect(nestSummaryHeadings("")).toBe("");
 	});
 });
 
@@ -432,6 +480,8 @@ describe("buildMeetingData", () => {
 				participants: [],
 				privateNotes: "notes",
 				summary: "summary md",
+				attachmentCount: 0,
+				attachmentIds: [],
 			},
 			"Me: hi",
 		);
@@ -446,7 +496,7 @@ describe("buildMeetingData", () => {
 
 	it("falls back to a default title when none is given", () => {
 		const data = buildMeetingData(
-			{ id: "id", title: "", date: "Mar 3, 2026 3:00 PM", url: "", participants: [], privateNotes: "", summary: "" },
+			{ id: "id", title: "", date: "Mar 3, 2026 3:00 PM", url: "", participants: [], privateNotes: "", summary: "", attachmentCount: 0, attachmentIds: [] },
 			"",
 		);
 		expect(data.title).toBe("Untitled Meeting");
@@ -505,6 +555,8 @@ describe("the note's link", () => {
 		participants: [],
 		privateNotes: "",
 		summary: "s",
+		attachmentCount: 0,
+		attachmentIds: [],
 	};
 
 	it("uses the link Granola returns", () => {
@@ -541,6 +593,8 @@ describe("buildMeetingData timing", () => {
 		participants: [],
 		privateNotes: "",
 		summary: "s",
+		attachmentCount: 0,
+		attachmentIds: [],
 	};
 	const PM3 = 15 * 60;
 	const at = (iso: string) => Date.parse(iso);
@@ -599,5 +653,45 @@ describe("buildMeetingData timing", () => {
 		expect(data.startMinutes).toBeNull();
 		expect(data.endMinutes).toBeNull();
 		expect(data.durationMinutes).toBe("");
+	});
+});
+
+describe("parseMeetingsResponse attachments", () => {
+	const SHOT_1 = "11111111-1111-4111-8111-111111111111";
+	const SHOT_2 = "22222222-2222-4222-8222-222222222222";
+	const PHOTO = "33333333-3333-4333-8333-333333333333";
+
+	it("lists screenshots and photos in Granola's order", () => {
+		const xml = `<meeting id="m1" title="Weekly Sync" date="Oct 20, 2026 4:00 PM EDT">
+  <summary>Notes</summary>
+  <attachments>
+<attachment id="${SHOT_1}" at="0:00">A slide titled "Roadmap" &amp; more</attachment>
+<attachment id="${SHOT_2}" at="12:30">A chart</attachment>
+<attachment id="${PHOTO}" type="photo" />
+</attachments>
+</meeting>`;
+		expect(parseMeetingsResponse(xml)[0].attachmentIds).toEqual([SHOT_1, SHOT_2, PHOTO]);
+	});
+
+	it("reads an attachments element that carries attributes", () => {
+		const xml = `<meeting id="m1" title="T" date="Oct 20, 2026 4:00 PM EDT"><attachments omitted="3"><attachment id="${SHOT_1}" at="0:00">x</attachment></attachments></meeting>`;
+		expect(parseMeetingsResponse(xml)[0].attachmentIds).toEqual([SHOT_1]);
+	});
+
+	it("ignores an attachment tag quoted in the summary", () => {
+		const xml = `<meeting id="m1" title="T" date="Oct 20, 2026 4:00 PM EDT"><summary>Use &lt;attachment id="x"&gt; and <attachment id="${SHOT_2}"></summary></meeting>`;
+		expect(parseMeetingsResponse(xml)[0].attachmentIds).toEqual([]);
+	});
+
+	it("reads the attachment count list_meetings gives", () => {
+		const xml = `<meeting id="m1" title="T" date="Oct 20, 2026 4:00 PM EDT" captured_by_me="true" attachment_count="16"></meeting>`;
+		const [meeting] = parseMeetingsResponse(xml);
+		expect(meeting.attachmentCount).toBe(16);
+		expect(meeting.attachmentIds).toEqual([]);
+	});
+
+	it("counts no attachments when the attribute is missing", () => {
+		const xml = `<meeting id="m1" title="T" date="Oct 20, 2026 4:00 PM EDT"></meeting>`;
+		expect(parseMeetingsResponse(xml)[0].attachmentCount).toBe(0);
 	});
 });

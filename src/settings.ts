@@ -1,9 +1,9 @@
-import { App, PluginSettingTab } from "obsidian";
+import { App, ConfirmationModal, Notice, PluginSettingTab } from "obsidian";
 import type { SettingDefinitionItem, SettingGroupItem } from "obsidian";
 import type GranolaSyncPlugin from "./main";
 import type { GranolaAccount } from "./main";
 import type { SyncTimeRange } from "./mcp-client";
-import { DEFAULT_DURATION_STYLE, formatDuration } from "./template";
+import { DEFAULT_DURATION_STYLE, formatDuration, isDefaultTemplate, resetTemplate } from "./template";
 import type { DurationStyle } from "./template";
 
 export type SyncFrequency = "manual" | "startup" | "1m" | "15m" | "30m" | "60m" | "12h";
@@ -63,6 +63,8 @@ export interface GranolaSyncSettings {
 	excludeSelfFromAttendees: boolean;
 	syncTimeRange: SyncTimeRange;
 	includeTranscripts: boolean;
+	downloadImages: boolean;
+	imageFolder: string;
 	durationStyle: DurationStyle;
 	granolaApiKey: string;
 	onlyMyMeetings: boolean;
@@ -79,6 +81,8 @@ export const DEFAULT_SETTINGS: GranolaSyncSettings = {
 	excludeSelfFromAttendees: true,
 	syncTimeRange: "last_30_days",
 	includeTranscripts: false,
+	downloadImages: true,
+	imageFolder: "./Attachments",
 	durationStyle: DEFAULT_DURATION_STYLE,
 	granolaApiKey: "",
 	onlyMyMeetings: true,
@@ -110,6 +114,42 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 
 		if (key === "syncFrequency") this.plugin.setupSyncInterval();
 		if (key === "showRibbonIcon") this.plugin.updateRibbonIcon();
+	}
+
+	/**
+	 * Replace the template with the bundled default once the user confirms,
+	 * since whatever they changed in it is overwritten. A template that already
+	 * matches is left alone without asking.
+	 */
+	private async confirmTemplateUpdate(): Promise<void> {
+		const templatePath = this.plugin.settings.templatePath || DEFAULT_SETTINGS.templatePath;
+		if (await isDefaultTemplate(this.app, templatePath)) {
+			new Notice("Your template already matches the default.");
+			return;
+		}
+
+		new ConfirmationModal(this.app)
+			.setTitle("Update template?")
+			.setContent(
+				`${templatePath} will be replaced with the default template. Any changes you made to it will be lost.`,
+			)
+			.addButton((button) =>
+				button
+					.setButtonText("Update template")
+					.setDestructive()
+					.setCta()
+					.onClick(async () => {
+						try {
+							await resetTemplate(this.app, templatePath);
+							new Notice("Template updated.");
+						} catch (error) {
+							console.error("Granola: failed to update the template", error);
+							new Notice("Failed to update the template. Check the console for details.");
+						}
+					})
+			)
+			.addCancelButton()
+			.open();
 	}
 
 	private accountsList(): SettingDefinitionItem<SettingKey> {
@@ -277,6 +317,18 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 					},
 				},
 				{
+					name: "Update template",
+					desc: "Replace your template with the plugin's current default, to pick up sections added since it was written, such as images. Any changes you made to the template are lost.",
+					aliases: ["reset template", "default template"],
+					render: (setting) => {
+						setting.addButton((button) =>
+							button
+								.setButtonText("Update template")
+								.onClick(() => void this.confirmTemplateUpdate())
+						);
+					},
+				},
+				{
 					name: "Show ribbon icon",
 					desc: "Show a sync button in the left ribbon",
 					control: {
@@ -325,6 +377,26 @@ export class GranolaSyncSettingTab extends PluginSettingTab {
 						type: "toggle",
 						key: "includeTranscripts",
 						defaultValue: DEFAULT_SETTINGS.includeTranscripts,
+					},
+				},
+				{
+					name: "Download images",
+					desc: "Save screenshots of shared screens, and photos attached in Granola, into your vault. Show them in notes with {{granola_images}} in your template.",
+					aliases: ["screenshots", "photos", "attachments"],
+					control: {
+						type: "toggle",
+						key: "downloadImages",
+						defaultValue: DEFAULT_SETTINGS.downloadImages,
+					},
+				},
+				{
+					name: "Image folder",
+					desc: "Where downloaded images go, each meeting in its own subfolder named after its note. Start with ./ to place it inside the note's folder; anything else is a path from the vault root.",
+					control: {
+						type: "text",
+						key: "imageFolder",
+						placeholder: DEFAULT_SETTINGS.imageFolder,
+						defaultValue: DEFAULT_SETTINGS.imageFolder,
 					},
 				},
 				{
