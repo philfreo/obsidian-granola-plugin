@@ -13,7 +13,6 @@ import { fetchMeetingTranscript, spokenRange, formatSegments } from "./granola-a
 import type { SpokenRange } from "./granola-api";
 import {
 	parseMeetingsResponse,
-	parseTranscriptResponse,
 	parseAccountInfo,
 	buildMeetingData,
 	excludeSelf,
@@ -594,7 +593,10 @@ export default class GranolaSyncPlugin extends Plugin {
 			throw error;
 		}
 
-		const listedMeetings = parseMeetingsResponse(listResponse);
+		// A meeting that falls on a page boundary can be listed on both pages.
+		const listedMeetings = [
+			...new Map(parseMeetingsResponse(listResponse).map((m) => [m.id, m])).values(),
+		];
 		if (listedMeetings.length === 0) {
 			return { created: 0, updated: 0, skipped: 0 };
 		}
@@ -658,9 +660,11 @@ export default class GranolaSyncPlugin extends Plugin {
 				// it returns the transcript already flattened into a string
 				// with every timestamp dropped — hence no length at all.
 				//
-				// Either way the transcript is fetched whether or not its
-				// text ends up in the note. Meetings whose notes already
-				// exist were filtered out before this point, so a
+				// The REST transcript is fetched whether or not its text ends
+				// up in the note, for the length. The MCP one carries no
+				// timing, and a long one takes several calls, so it is only
+				// fetched when the note shows it. Meetings whose notes
+				// already exist were filtered out before this point, so a
 				// steady-state sync fetches nothing extra.
 				const apiKey = this.settings.granolaApiKey.trim();
 				let transcript = "";
@@ -685,9 +689,9 @@ export default class GranolaSyncPlugin extends Plugin {
 				// Falls through to the MCP when there is no key, and also when
 				// the key was rejected, so a bad key costs the meeting its
 				// length rather than its notes.
-				if (!transcript) {
+				if (!transcript && this.settings.includeTranscripts) {
 					try {
-						transcript = parseTranscriptResponse(await mcp.getTranscript(details.id));
+						transcript = await mcp.getTranscript(details.id);
 					} catch (error) {
 						console.error(`Granola: transcript fetch failed for ${details.id}`, error);
 					}

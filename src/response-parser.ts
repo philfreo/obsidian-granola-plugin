@@ -330,7 +330,25 @@ export function excludeSelf(
 	return participants.filter((p) => p.email.trim().toLowerCase() !== self);
 }
 
-export function parseTranscriptResponse(text: string): string {
+/**
+ * One reply from `get_meeting_transcript`. Since 2026-10-20 Granola returns at
+ * most `max_chars` characters per call, cut at an utterance boundary, and says
+ * so with `truncated` and `next_offset`.
+ *
+ * `text` is not trimmed. Pages only join back into the original transcript if
+ * their edge whitespace is kept, and speaker breaks depend on the double space
+ * before each label, so trimming a page could merge two speakers.
+ */
+export interface TranscriptPage {
+	text: string;
+	/** False for a plain-text reply, which cannot be continued. */
+	paged: boolean;
+	offset: number;
+	truncated: boolean;
+	nextOffset?: number;
+}
+
+export function parseTranscriptPage(text: string): TranscriptPage {
 	const candidates = [text];
 	const start = text.indexOf("{");
 	const end = text.lastIndexOf("}");
@@ -339,13 +357,33 @@ export function parseTranscriptResponse(text: string): string {
 	}
 	for (const candidate of candidates) {
 		try {
-			const data = JSON.parse(candidate) as { transcript?: string };
-			return data.transcript?.trim() || "";
+			const data = JSON.parse(candidate) as {
+				transcript?: unknown;
+				offset?: unknown;
+				truncated?: unknown;
+				next_offset?: unknown;
+			};
+			const transcript = data.transcript ?? "";
+			if (typeof transcript !== "string") throw new TypeError("transcript is not text");
+			// Any JSON reply counts as a page, and a missing `truncated` means
+			// it is the last one: requiring the flag would discard a whole
+			// transcript if Granola left it off the final page.
+			return {
+				text: transcript,
+				paged: true,
+				offset: typeof data.offset === "number" ? data.offset : 0,
+				truncated: data.truncated === true,
+				nextOffset: typeof data.next_offset === "number" ? data.next_offset : undefined,
+			};
 		} catch {
 			// try next candidate
 		}
 	}
-	return text.trim();
+	return { text, paged: false, offset: 0, truncated: false };
+}
+
+export function parseTranscriptResponse(text: string): string {
+	return parseTranscriptPage(text).text.trim();
 }
 
 // Speaker labels are capitalized words followed by a colon: a participant's
