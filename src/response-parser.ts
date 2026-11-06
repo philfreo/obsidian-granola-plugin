@@ -341,7 +341,7 @@ export function excludeSelf(
  */
 export interface TranscriptPage {
 	text: string;
-	/** False for plain text, or JSON without the paging fields. */
+	/** False for a plain-text reply, which cannot be continued. */
 	paged: boolean;
 	offset: number;
 	truncated: boolean;
@@ -365,9 +365,12 @@ export function parseTranscriptPage(text: string): TranscriptPage {
 			};
 			const transcript = data.transcript ?? "";
 			if (typeof transcript !== "string") throw new TypeError("transcript is not text");
+			// Any JSON reply counts as a page, and a missing `truncated` means
+			// it is the last one: requiring the flag would discard a whole
+			// transcript if Granola left it off the final page.
 			return {
 				text: transcript,
-				paged: typeof data.truncated === "boolean",
+				paged: true,
 				offset: typeof data.offset === "number" ? data.offset : 0,
 				truncated: data.truncated === true,
 				nextOffset: typeof data.next_offset === "number" ? data.next_offset : undefined,

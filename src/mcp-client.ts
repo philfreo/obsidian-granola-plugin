@@ -152,7 +152,15 @@ export class GranolaMcpClient {
 			throw new Error("Not connected to Granola");
 		}
 		const result = await this.client.callTool({ name, arguments: args });
-		return result.content as ToolContent[];
+		const content = (result.content ?? []) as ToolContent[];
+		// A tool error comes back as an ordinary reply with `isError` set. Read
+		// as data, its text would be written as a transcript, or end a paged
+		// list early because it has no pagination tag.
+		if (result.isError) {
+			const text = content.map((c) => c.text ?? "").join("\n").trim();
+			throw new Error(`Granola ${name} failed: ${text || "no details"}`);
+		}
+		return content;
 	}
 }
 
