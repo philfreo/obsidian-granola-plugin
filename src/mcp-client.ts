@@ -2,6 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { GranolaAuthProvider } from "./auth";
 import { nodeFetch } from "./fetch";
+import { readMeetingList, readTranscript, TRANSCRIPT_PAGE_CHARS } from "./paging";
 
 const MCP_SERVER_URL = "https://mcp.granola.ai/mcp";
 
@@ -82,8 +83,12 @@ export class GranolaMcpClient {
 		await transport.finishAuth(authorizationCode);
 	}
 
+	/** Every page of the list, joined: long windows span several `list_meetings` replies. */
 	async listMeetings(timeRange: SyncTimeRange, onlyMyMeetings: boolean): Promise<string> {
-		return this.callToolText("list_meetings", buildListMeetingsArgs(timeRange, onlyMyMeetings));
+		const args = buildListMeetingsArgs(timeRange, onlyMyMeetings);
+		return readMeetingList((cursor) =>
+			this.callToolText("list_meetings", cursor ? { ...args, cursor } : args),
+		);
 	}
 
 	/**
@@ -115,8 +120,20 @@ export class GranolaMcpClient {
 		return { data: image.data!, mimeType: image.mimeType ?? "" };
 	}
 
+	/**
+	 * The whole transcript. Granola returns at most `max_chars` per call and cuts
+	 * at an utterance, so this asks for the largest page and follows `next_offset`.
+	 * Without `max_chars` the reply is capped at 40,000 characters by default
+	 * (BigBrain PR #323, not verified against Granola's docs).
+	 */
 	async getTranscript(meetingId: string): Promise<string> {
-		return this.callToolText("get_meeting_transcript", { meeting_id: meetingId });
+		return readTranscript((offset) =>
+			this.callToolText("get_meeting_transcript", {
+				meeting_id: meetingId,
+				max_chars: TRANSCRIPT_PAGE_CHARS,
+				...(offset ? { offset } : {}),
+			}),
+		);
 	}
 
 	async getAccountInfo(): Promise<string> {

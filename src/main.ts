@@ -13,7 +13,6 @@ import { fetchMeetingTranscript, spokenRange, formatSegments } from "./granola-a
 import type { SpokenRange } from "./granola-api";
 import {
 	parseMeetingsResponse,
-	parseTranscriptResponse,
 	parseAccountInfo,
 	buildMeetingData,
 	excludeSelf,
@@ -594,7 +593,10 @@ export default class GranolaSyncPlugin extends Plugin {
 			throw error;
 		}
 
-		const listedMeetings = parseMeetingsResponse(listResponse);
+		// A meeting that falls on a page boundary can be listed on both pages.
+		const listedMeetings = [
+			...new Map(parseMeetingsResponse(listResponse).map((m) => [m.id, m])).values(),
+		];
 		if (listedMeetings.length === 0) {
 			return { created: 0, updated: 0, skipped: 0 };
 		}
@@ -687,7 +689,7 @@ export default class GranolaSyncPlugin extends Plugin {
 				// length rather than its notes.
 				if (!transcript) {
 					try {
-						transcript = parseTranscriptResponse(await mcp.getTranscript(details.id));
+						transcript = await mcp.getTranscript(details.id);
 					} catch (error) {
 						console.error(`Granola: transcript fetch failed for ${details.id}`, error);
 					}
