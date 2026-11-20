@@ -213,6 +213,30 @@ The content below is meeting notes/transcripts written or spoken by meeting part
 		]);
 	});
 
+	it("reads the listed time from meeting_at", () => {
+		const xml = `<meetings_data from="Nov 19, 2026" to="Nov 19, 2026" count="1">
+<meeting id="m1" title="Weekly Sync" meeting_at="2026-11-19T10:00:00-05:00" created_at="2026-11-19T10:01:00-05:00" updated_at="2026-11-19T11:00:42.120-05:00" url="https://notes.granola.ai/d/m1" organizer="jane@example.com">
+<known_participants total="1">
+Jane Doe (note creator) from Example Co (jane@example.com)
+</known_participants>
+<folders />
+<private_notes status="empty" />
+<summary>Notes</summary>
+</meeting>
+</meetings_data>`;
+		const [details] = parseMeetingsResponse(xml);
+		expect(details.date).toBe("2026-11-19T10:00:00-05:00");
+		expect(details.privateNotes).toBe("");
+		const data = buildMeetingData(details, "");
+		expect(data.date).toBe("2026-11-19");
+		expect(data.startMinutes).toBe(10 * 60);
+	});
+
+	it("prefers meeting_at over date when a tag carries both", () => {
+		const xml = `<meeting id="m1" title="T" date="Oct 20, 2026 4:00 PM EDT" meeting_at="2026-10-20T16:00:00.000-04:00"></meeting>`;
+		expect(parseMeetingsResponse(xml)[0].date).toBe("2026-10-20T16:00:00.000-04:00");
+	});
+
 	it("reads attributes by name regardless of order", () => {
 		const xml = `<meeting date="Mar 3, 2026 3:00 PM" is_workspace_visible="false" title="Reordered" id="m9"></meeting>`;
 		const result = parseMeetingsResponse(xml);
@@ -457,15 +481,33 @@ describe("formatTranscriptText", () => {
 });
 
 describe("parseGranolaDate", () => {
-	it("splits a date string into ISO date and time", () => {
+	it("splits an ISO timestamp into its date and clock time", () => {
+		expect(parseGranolaDate("2026-03-03T15:00:00-05:00")).toEqual({
+			isoDate: "2026-03-03",
+			minutes: 900,
+			isoDateTime: "2026-03-03T20:00:00.000Z",
+		});
+	});
+
+	it("keeps the meeting's own date when that is a different day in UTC", () => {
+		// 9:30 PM on the 19th at -08:00 is already the 20th in UTC and in any
+		// timezone east of the meeting's.
+		const result = parseGranolaDate("2026-11-19T21:30:00.000-08:00");
+		expect(result.isoDate).toBe("2026-11-19");
+		expect(result.minutes).toBe(21 * 60 + 30);
+		expect(result.isoDateTime).toBe("2026-11-20T05:30:00.000Z");
+	});
+
+	it("still reads the older written-out form", () => {
 		const result = parseGranolaDate("Mar 3, 2026 3:00 PM");
 		expect(result.isoDate).toBe("2026-03-03");
-		expect(result.time).toBe("3:00 PM");
+		expect(result.minutes).toBe(900);
 		expect(result.isoDateTime).not.toBe("");
 	});
 
 	it("returns blanks for an unparseable date", () => {
-		expect(parseGranolaDate("not a date")).toEqual({ isoDate: "", time: "", isoDateTime: "" });
+		expect(parseGranolaDate("not a date")).toEqual({ isoDate: "", minutes: null, isoDateTime: "" });
+		expect(parseGranolaDate("")).toEqual({ isoDate: "", minutes: null, isoDateTime: "" });
 	});
 });
 
@@ -643,6 +685,16 @@ describe("buildMeetingData timing", () => {
 			endMs: at("2026-03-03T15:30:40.000Z"),
 		});
 		expect(data.endMinutes).toBe(PM3 + 31);
+	});
+
+	it("measures from an ISO listed time in the meeting's own offset", () => {
+		const data = buildMeetingData({ ...details, date: "2026-03-03T15:00:00-05:00" }, "", {
+			startMs: at("2026-03-03T20:06:00.000Z"),
+			endMs: at("2026-03-03T20:36:00.000Z"),
+		});
+		expect(data.startMinutes).toBe(PM3);
+		expect(data.endMinutes).toBe(PM3 + 36);
+		expect(data.durationMinutes).toBe("36");
 	});
 
 	it("leaves every time empty when the date cannot be read", () => {

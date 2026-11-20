@@ -10,7 +10,7 @@ export interface ParsedParticipant {
 export interface ParsedMeeting {
 	id: string;
 	title: string;
-	date: string; // raw from API, e.g. "Mar 3, 2026 3:00 PM"
+	date: string; // raw from API, e.g. "2026-03-03T15:00:00-05:00"
 	/** Granola's own link to the note; "" when the response omits it. */
 	url: string;
 	participants: ParsedParticipant[];
@@ -163,7 +163,9 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		const id = attr(openTag, "id");
 		if (!id) continue;
 		const title = attr(openTag, "title");
-		const date = attr(openTag, "date");
+		// Granola sends the listed time as `meeting_at`. Responses from before
+		// November 2026 carried it as `date` instead.
+		const date = attr(openTag, "meeting_at") || attr(openTag, "date");
 		const url = attr(openTag, "url");
 
 		const participantsMatch = body.match(/<known_participants>\s*([\s\S]*?)\s*<\/known_participants>/);
@@ -404,24 +406,44 @@ export function parseClockTime(time12: string): number | null {
 }
 
 /**
- * Parse a Granola date string like "Mar 3, 2026 3:00 PM" into components.
+ * Split a meeting's listed time into its calendar date and clock time, both
+ * wall-clock values in the meeting's own timezone, plus the exact instant.
+ *
+ * Granola sends ISO 8601 with the meeting's offset ("2026-03-03T15:00:00-05:00").
+ * The date and clock time are read off the string itself, because `Date`'s
+ * getters would shift them into the syncing device's timezone, moving a late
+ * evening meeting onto the next day for anyone east of it.
+ *
+ * Older responses used the form "Mar 3, 2026 3:00 PM EST", which carries no
+ * numeric date to read off, so it goes through `Date` instead.
  */
-export function parseGranolaDate(dateStr: string): { isoDate: string; time: string; isoDateTime: string } {
+export function parseGranolaDate(dateStr: string): {
+	isoDate: string;
+	minutes: number | null;
+	isoDateTime: string;
+} {
 	const d = new Date(dateStr);
 	if (isNaN(d.getTime())) {
-		return { isoDate: "", time: "", isoDateTime: "" };
+		return { isoDate: "", minutes: null, isoDateTime: "" };
+	}
+	const isoDateTime = d.toISOString();
+
+	const iso = dateStr.match(/^(\d{4}-\d{2}-\d{2})(?:T(\d{2}):(\d{2}))?/);
+	if (iso) {
+		const [, isoDate, hour, minute] = iso;
+		const minutes = hour === undefined ? null : parseInt(hour, 10) * 60 + parseInt(minute, 10);
+		return { isoDate, minutes, isoDateTime };
 	}
 
 	const year = d.getFullYear();
 	const month = String(d.getMonth() + 1).padStart(2, "0");
 	const day = String(d.getDate()).padStart(2, "0");
-	const isoDate = `${year}-${month}-${day}`;
-
-	// Extract time from original string
 	const timeMatch = dateStr.match(/\d{1,2}:\d{2}\s*[AP]M/i);
-	const time = timeMatch ? timeMatch[0] : "";
-
-	return { isoDate, time, isoDateTime: d.toISOString() };
+	return {
+		isoDate: `${year}-${month}-${day}`,
+		minutes: timeMatch ? parseClockTime(timeMatch[0]) : null,
+		isoDateTime,
+	};
 }
 
 /**
@@ -443,8 +465,7 @@ export function buildMeetingData(
 	transcript: string,
 	spoken: SpokenRange | null = null,
 ): MeetingData {
-	const { isoDate, time, isoDateTime } = parseGranolaDate(details.date);
-	const listedMinutes = parseClockTime(time);
+	const { isoDate, minutes: listedMinutes, isoDateTime } = parseGranolaDate(details.date);
 	const listedInstant = Date.parse(details.date);
 	const canTime = listedMinutes !== null && spoken !== null && !isNaN(listedInstant);
 
