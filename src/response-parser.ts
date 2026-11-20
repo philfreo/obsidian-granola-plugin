@@ -10,7 +10,7 @@ export interface ParsedParticipant {
 export interface ParsedMeeting {
 	id: string;
 	title: string;
-	date: string; // raw from API, e.g. "Mar 3, 2026 3:00 PM"
+	date: string; // raw from API, e.g. "Mar 3, 2026 3:00 PM", or ISO `meeting_at` when `date` is absent
 	/** Granola's own link to the note; "" when the response omits it. */
 	url: string;
 	participants: ParsedParticipant[];
@@ -163,7 +163,9 @@ export function parseMeetingsResponse(xml: string): ParsedMeetingDetails[] {
 		const id = attr(openTag, "id");
 		if (!id) continue;
 		const title = attr(openTag, "title");
-		const date = attr(openTag, "date");
+		// Granola stopped sending `date` around 19 Nov 2026; `meeting_at`
+		// holds the same moment as an ISO timestamp.
+		const date = attr(openTag, "date") || attr(openTag, "meeting_at");
 		const url = attr(openTag, "url");
 
 		const participantsMatch = body.match(/<known_participants>\s*([\s\S]*?)\s*<\/known_participants>/);
@@ -403,13 +405,27 @@ export function parseClockTime(time12: string): number | null {
 	return hour * 60 + minute;
 }
 
+/** The wall-clock part of an ISO timestamp like "2026-11-19T21:15:42+01:00". */
+const ISO_WALL_CLOCK = /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2})/;
+
 /**
  * Parse a Granola date string like "Mar 3, 2026 3:00 PM" into components.
+ *
+ * Also accepts the ISO `meeting_at` timestamp, which is all Granola sends
+ * once a meeting tag carries no `date`. Its date and time are read as
+ * written, in the meeting's own offset, the same wall clock `date` showed.
  */
 export function parseGranolaDate(dateStr: string): { isoDate: string; time: string; isoDateTime: string } {
 	const d = new Date(dateStr);
 	if (isNaN(d.getTime())) {
 		return { isoDate: "", time: "", isoDateTime: "" };
+	}
+
+	const iso = dateStr.match(ISO_WALL_CLOCK);
+	if (iso) {
+		const hour = parseInt(iso[2], 10);
+		const time = `${hour % 12 || 12}:${iso[3]} ${hour < 12 ? "AM" : "PM"}`;
+		return { isoDate: iso[1], time, isoDateTime: d.toISOString() };
 	}
 
 	const year = d.getFullYear();

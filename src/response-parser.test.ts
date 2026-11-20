@@ -213,6 +213,29 @@ The content below is meeting notes/transcripts written or spoken by meeting part
 		]);
 	});
 
+	it("falls back to meeting_at when the tag carries no date", () => {
+		const xml = `<meetings_data from="Nov 19, 2026" to="Nov 19, 2026" count="1">
+<meeting id="m1" title="Ad-hoc Call" meeting_at="2026-11-19T21:15:42+01:00" created_at="2026-11-19T21:15:42+01:00" updated_at="2026-11-20T09:00:00.000+01:00" url="https://notes.granola.ai/d/m1">
+<known_participants>
+Jane Doe (note creator) (jane@example.com)
+</known_participants>
+<folders />
+<private_notes status="empty" />
+<summary>Notes</summary>
+</meeting>
+</meetings_data>`;
+		const [meeting] = parseMeetingsResponse(xml);
+		expect(meeting.date).toBe("2026-11-19T21:15:42+01:00");
+		const data = buildMeetingData(meeting, "");
+		expect(data.date).toBe("2026-11-19");
+		expect(data.startMinutes).toBe(21 * 60 + 15);
+	});
+
+	it("prefers date over meeting_at when both are present", () => {
+		const xml = `<meeting id="m1" title="T" date="Oct 20, 2026 4:00 PM EDT" meeting_at="2026-10-20T16:00:00.000-04:00"></meeting>`;
+		expect(parseMeetingsResponse(xml)[0].date).toBe("Oct 20, 2026 4:00 PM EDT");
+	});
+
 	it("reads attributes by name regardless of order", () => {
 		const xml = `<meeting date="Mar 3, 2026 3:00 PM" is_workspace_visible="false" title="Reordered" id="m9"></meeting>`;
 		const result = parseMeetingsResponse(xml);
@@ -466,6 +489,20 @@ describe("parseGranolaDate", () => {
 
 	it("returns blanks for an unparseable date", () => {
 		expect(parseGranolaDate("not a date")).toEqual({ isoDate: "", time: "", isoDateTime: "" });
+	});
+
+	it("reads an ISO meeting_at timestamp on its own wall clock", () => {
+		expect(parseGranolaDate("2026-11-19T21:15:42+01:00")).toEqual({
+			isoDate: "2026-11-19",
+			time: "9:15 PM",
+			isoDateTime: "2026-11-19T20:15:42.000Z",
+		});
+	});
+
+	it("keeps the meeting's own date near midnight, whatever the device timezone", () => {
+		expect(parseGranolaDate("2026-11-19T00:05:00+05:00")).toMatchObject({ isoDate: "2026-11-19", time: "12:05 AM" });
+		expect(parseGranolaDate("2026-11-19T23:55:00.000-08:00")).toMatchObject({ isoDate: "2026-11-19", time: "11:55 PM" });
+		expect(parseGranolaDate("2026-11-19T12:30:00Z")).toMatchObject({ isoDate: "2026-11-19", time: "12:30 PM" });
 	});
 });
 
